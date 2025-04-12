@@ -1,0 +1,22 @@
+labuser@oisl-lab15:~/landledger-backend$ curl -X POST http://localhost:4000/api/signup \
+> -H "Content-Type: application/json" \
+> -d '{"email": "morgan.tilong@gmail.com", "password":"test@1234", "name":"Test user"}'
+{"error":"There is no configuration corresponding to the provided identifier."}labuser@oisl-lab15:~/landledger-backend$ 
+labuser@oisl-lab15:~/landledger-backend$ curl -X POST http://localhost:4000/api/signup -H "Content-Type: application/json" -d '{"email": "morgan.tilong@gmail.com", "password":"test@1234", "name":"Test user"}'
+{"error":"secretOrPrivateKey must have a value"}labuser@oisl-lab15:~/landledger-backend$ curl -X POST http://localhost:4000/api/signup \
+>      -H "Content-Type: application/json" \
+>      -d '{"email":"testuser@example.com", "password":"Test@1234", "name":"Test User"}'
+{"error":"secretOrPrivateKey must have a value"}labuser@oisl-lab15:~/landledger-backend$ nano env
+labuser@oisl-lab15:~/landledger-backend$ nano .env
+labuser@oisl-lab15:~/landledger-backend$ curl -X POST http://localhost:4000/api/signup \
+>      -H "Content-Type: application/json" \
+>      -d '{"email": "morgan.tilong@gmail.com", "password":"test@1234", "name":"Test user"}'
+{"error":"The email address is already in use by another account."}labuser@oisl-lab15:~/landledger-backend$ 
+labuser@oisl-lab15:~/landledger-backend$ 
+labuser@oisl-lab15:~/landledger-backend$ 
+labuser@oisl-lab15:~/landledger-backend$ 
+labuser@oisl-lab15:~/landledger-backend$ curl -X POST http://localhost:4000/api/login \
+> -H "Content-Type: application/json" \
+> -d '{"email": "morgan.tilong@gmail.com"}'
+{"token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOiJ4S21VUUsyRG1XWUVWRGQyT3JOZ3VjN1cwV0czIiwiaWF0IjoxNzQxMjMzOTA5LCJleHAiOjE3NDE4Mzg3MDl9.ONjU1eEfPXShBCFUiPzE3sDO0gJk0DpxOPJcKV5Girs","user":{"uid":"xKmUQK2DmWYEVDd2OrNguc7W0WG3","email":"morgan.tilong@gmail.com","emailVerified":false,"displayName":"Test user","disabled":false,"metadata":{"lastSignInTime":null,"creationTime":"Thu, 06 Mar 2025 03:58:48 GMT","lastRefreshTime":null},"tokensValidAfterTime":"Thu, 06 Mar 2025 03:58:48 GMT","providerData":[{"uid":"morgan.tilong@gmail.com","displayName":"Test user","email":"morgan.tilong@gmail.com","providerId":"password"}]}}labuser@oisl-lab15:~/landledger-backend$ 
+

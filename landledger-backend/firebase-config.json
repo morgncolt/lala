@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "landledger-africa",
+  "private_key_id": "a7350ac992b098fa4da56df01ae5a73d8b455ebd",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDR4USdogbeWaWu\n2UCQd79IoS12e3MwCUMIGg9rV8I+SdAJeOvfDHM3DHFGvPiqnL5jyebvyTpIiMNP\n1+3t1RB0AgScj5p858PBl6gFUXrdqSKplB93/heJok8KKqaDgpns8GENNWFYGaxP\nF7H7/nnUvK1jVRcjMl6GkKG/NpqBPCQc78/RDZ3lX2rhWvfE8aJc4jpWBwxytqfj\n6f1LO6iqZnqF29QUq+nU6t7uvtlt08QrtErntKDayoCcRPq2S2NUUrd8+5oHFuAp\nhn5SYPjaLhWUKTv1tTe+ybr2vY4+yiTpgNN9g2fGdYMnH/+si53U/ECZUtJQ6Rw4\nfSSR6/MLAgMBAAECggEAExN812NrApodJChmWDTIg8ZbXP0GFudVZ3ucfvh+u1QD\n+JBvYLPl48RNDKc2Mz+q65cy1wTJuBHVYSdY3pIylb2HNyzmpEeAGrnF9+T6tc7F\nMhE4aQFRzCmey7RDs6LsiniKW0p74UErUOCjX0QEEjESBPv7beOkOGpJIUzKInvJ\nDuWAIkjs03nfLe7mHdSFXpnKUvlJ3TQNHWyLhkMV6YNfgpQrrrgTkmlEYmlZQT3m\nqqqHYUCAmHiK9HeUL5h6Inf3rP5ON4VwBnMMIQL+V2TTo3owvTi4y8x4j+MBSBWG\nbKOnhrI5Me/SYOE1MFM4RM1pNH4A6iPfsrt5wMiVCQKBgQDrjf85mwR214W3l4Xo\naFZqIjMHaesWR9OzUcN4GKAOWFpKMCqM949NCtX5NvB0Un/FrH4NDxc5ZBRjbRkZ\n5bKQQM0j9bjqySyizZCVFwhOMYdoudU0my9IA+sdxfTAqCKeflW+nTcyBaHbgs09\njmRnOeoY9PrdUGTY8gllR41HWQKBgQDkGMf2uYifDudGOu/7m7zXJeGKd7XUcafj\nIcj2RPZ5XscpqZnr6tfy48EZ8KZ2W6l4aSFuI9i24+wjmJISCqSez2hhVmEkStgp\nYT5d2eZWYb2ef5gmi7C6Sqz8cAa0Ng4cQSjL8lZU1fUvSQYflRUiGteEV8NIYj38\nRvkpKU5lAwKBgHTwJm9bpMi2z/xHrcOl4JiJ59lbXMjP2aohAjAh0Xutow1Hgig/\nUhXGNlmlS5QDzMi+jElBX58vLuv5Ikf3/0Cb2vtqJmXwf0dHU+qf55CiB/4Wm2Cl\nVcCjqVo7hvkJvz39q+WYOOmNYEAQXIGdqfyRBMVlARFTsuz8o2tzLRDpAoGAXzwl\niVMPwvFzCLSk7FWq892CHNE8nvXRVhkOEhzbF/PFjhSdCo5kGaqUPmNm7TX6PScP\n6S+YVUw2lOon2taMwy3v8+wf5QpG1IgghQjsjhaDGEFH4pgicrWpIkEX23hSTeO6\nx+RnvUYT9+kyYE9booC4iS4nf/pczQ9JCrGPZMcCgYB2TBD9UFwNa0fTJgHMKWxQ\nZt4XbMJIOxXEhOsTlVTP5FNBRUjzmPQ7EsJfa/L7yf8Ax6ValszIqAwvHi8x9oUI\ndawEo5NftjXXtc2QdD90FR2qK5kZQ1X3mVDnmdA4beBMZhkWuYLR8ht9jhMxQmI/\n/Z0SCRa35MP/dlPzHc4kiA==\n-----END PRIVATE KEY-----\n",
+  "client_email": "firebase-adminsdk-fbsvc@landledger-africa.iam.gserviceaccount.com",
+  "client_id": "112668596553550398289",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40landledger-africa.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

@@ -1,0 +1,41 @@
+build-essential: Provides basic tools for compiling code.
+curl, git, unzip, wget: Used to fetch and manage external dependencies.
+nodejs, npm: Required for running JavaScript-based backend.
+mongodb, postgresql: Databases for storing user profiles and land records.
+redis: In-memory data storage (useful for caching and messaging).
+docker-compose: Helps in containerizing the backend for easy deployment.
+-----------------------------------------------------------------------------------------------------------
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y build-essential curl git unzip wget \
+    nodejs npm mongodb postgresql redis docker-compose
+-----------------------------------------------------------------------------------------------------------
+
+
+express: Web framework for building APIs.
+dotenv: Loads environment variables from a .env file.
+cors: Handles cross-origin requests.
+mongoose: Interacts with MongoDB.
+pg: PostgreSQL client for Node.js.
+firebase-admin: Firebase SDK for authentication.
+jsonwebtoken (JWT): Secure authentication tokens.
+bcrypt: Hashes passwords.
+socket.io: Enables real-time communication.
+multer: Handles file uploads.
+-----------------------------------------------------------------------------------------------------------
+mkdir landledger-backend && cd landledger-backend  # Create project directory
+npm init -y  # Initialize a Node.js project with default settings
+npm install express dotenv cors mongoose pg \
+    firebase-admin jsonwebtoken bcrypt socket.io multer  # Install dependencies
+
+-----------------------------------------------------------------------------------------------------------
+
+
+We'll use Firebase Auth for sign-in and JWT (JSON Web Tokens) for secure API authentication.
+
+Configure Firebase Admin
+1️Create a Firebase project in Firebase Console.
+2Download Firebase Admin SDK (JSON file).
+3Move it to your project and rename it firebase-config.json.
+-----------------------------------------------------------------------------------------------------------
+npm install firebase-admin
+-----------------------------------------------------------------------------------------------------------
