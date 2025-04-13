@@ -5,7 +5,9 @@ import 'package:flutter/foundation.dart'; // For kIsWeb platform detection
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final GoogleSignIn _googleSignIn = GoogleSignIn(
+    //clientId: "829972798062-j97p91tqtc5nlvqu1pv9hrnvd2nae7vh.apps.googleusercontent.com", // Ensure client ID is correct
     clientId: "829972798062-iujmhdiulvkdalmqvecmvkrrngk4r51m.apps.googleusercontent.com", // Ensure client ID is correct
+
   );
 
   AuthService() {
@@ -57,38 +59,33 @@ class AuthService {
     }
   }
 
-  /// Sign in a user using Google (works for both Web and Mobile).
   Future<User?> signInWithGoogle() async {
     try {
-      GoogleSignInAccount? googleUser;
-
-      // Detect platform and sign in accordingly
-      if (kIsWeb) {
-        googleUser = await _googleSignIn.signInSilently(); // Web-specific sign-in
-      } else {
-        googleUser = await _googleSignIn.signIn(); // Mobile-specific sign-in
-      }
+      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
 
       if (googleUser == null) {
         debugPrint("Google Sign-In was canceled by the user.");
         return null;
       }
 
-      // Authenticate and retrieve credentials
       final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+
       final AuthCredential credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );
 
-      // Sign in to Firebase
-      UserCredential userCredential = await _auth.signInWithCredential(credential);
+      final UserCredential userCredential = await _auth.signInWithCredential(credential);
+
+      debugPrint("Google Sign-In successful: ${userCredential.user?.displayName}");
+
       return userCredential.user;
     } catch (e) {
       debugPrint("Google Sign-In Error: $e");
       return null;
     }
   }
+
 
   /// Log out the current user.
   Future<void> logout() async {
