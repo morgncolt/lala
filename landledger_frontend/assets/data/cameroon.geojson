@@ -1,0 +1,66 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "owner": "Paul Biya",
+        "title_number": "CM-001",
+        "description": "Yaoundé central"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [11.5, 3.8],
+            [11.6, 3.85],
+            [11.5, 3.9],
+            [11.4, 3.85],
+            [11.5, 3.8]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "owner": "Fon Achu",
+        "title_number": "CM-002",
+        "description": "Residential land in Bamenda"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [10.25, 5.95],
+            [10.30, 6.00],
+            [10.25, 6.05],
+            [10.20, 6.00],
+            [10.25, 5.95]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "owner": "Cameroon UBC Bank",
+        "title_number": "CM-003",
+        "description": "Cameroon UBC bank"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [10.151134156255381, 5.958250964600097],
+            [10.151535859981465, 5.958250964600097],
+            [10.151535859981465, 5.958815011803395],
+            [10.151134156255381, 5.958815011803395],
+            [10.151134156255381, 5.958250964600097]
+          ]
+        ]
+      }
+    }
+  ]
+}
+

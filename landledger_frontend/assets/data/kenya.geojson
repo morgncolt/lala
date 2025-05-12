@@ -1,0 +1,25 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "owner": "Wangari Maathai",
+        "title_number": "KE-001",
+        "description": "Nairobi South B"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [36.8, -1.3],
+            [36.85, -1.25],
+            [36.9, -1.3],
+            [36.85, -1.35],
+            [36.8, -1.3]
+          ]
+        ]
+      }
+    }
+  ]
+}
