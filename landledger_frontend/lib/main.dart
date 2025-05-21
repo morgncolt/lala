@@ -3,7 +3,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
 import 'dashboard_screen.dart';
-import 'signup_screen.dart'; // ✅ Real signup screen
+import 'login_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -31,12 +31,10 @@ class LandLedgerApp extends StatelessWidget {
           primary: Color(0xFF006AFF), // Zillow blue
           secondary: Color(0xFF004EA8),
           surface: Colors.white,
-          background: Color(0xFFF7F8FA),
           error: Colors.red,
           onPrimary: Colors.white,
           onSecondary: Colors.white,
           onSurface: Colors.black,
-          onBackground: Colors.black,
           onError: Colors.white,
         ),
         scaffoldBackgroundColor: Color(0xFFF7F8FA),
@@ -59,9 +57,10 @@ class LandLedgerApp extends StatelessWidget {
               body: Center(child: CircularProgressIndicator()),
             );
           } else if (snapshot.hasData) {
-            return const DashboardScreen();
+            // Start in Dashboard on the Home tab (index 0)
+            return DashboardScreen(initialTabIndex: 1);
           } else {
-            return SignUpScreen(); // ✅ This is now the real one
+            return LoginScreen();
           }
         },
       ),

@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_map_cancellable_tile_provider/flutter_map_cancellable_tile_provider.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:flutter/services.dart' show rootBundle;
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:convert';
 
 class MapScreen extends StatefulWidget {
@@ -10,11 +13,11 @@ class MapScreen extends StatefulWidget {
   final List<LatLng>? highlightPolygon;
 
   const MapScreen({
-    Key? key,
+    super.key,
     required this.regionKey,
     required this.geojsonPath,
     this.highlightPolygon,
-  }) : super(key: key);
+  });
 
   @override
   State<MapScreen> createState() => _MapScreenState();
@@ -33,6 +36,7 @@ class _MapScreenState extends State<MapScreen> {
     super.initState();
     _mapController = MapController();
     loadGeoJson();
+    loadSavedPolygons();
   }
 
   Future<void> loadGeoJson() async {
@@ -92,6 +96,56 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  Future<void> loadSavedPolygons() async {
+    try {
+      final query = await FirebaseFirestore.instance
+          .collection('regions')
+          .where('regionKey', isEqualTo: widget.regionKey)
+          .get();
+
+      for (var doc in query.docs) {
+        final data = doc.data();
+        final coords = data['geometry']['coordinates'][0] as List;
+        final latLngList = coords.map<LatLng>((c) => LatLng(c[1], c[0])).toList();
+
+        setState(() {
+          polygons.add(
+            Polygon(
+              points: latLngList,
+              borderColor: Colors.purple,
+              color: Colors.purple.withOpacity(0.4),
+              borderStrokeWidth: 2,
+            ),
+          );
+          polygonPointsList.add(latLngList);
+          polygonProperties.add(data['properties']);
+        });
+      }
+    } catch (e) {
+      debugPrint("Failed to load saved polygons: $e");
+    }
+  }
+
+  Future<void> savePolygonGeoJson() async {
+    final geojson = {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          currentPolygonPoints.map((p) => [p.longitude, p.latitude]).toList()
+        ]
+      },
+      "properties": {
+        "title_number": "N/A",
+        "owner": FirebaseAuth.instance.currentUser?.email ?? "Unknown",
+        "description": "Manually added region",
+      },
+      "regionKey": widget.regionKey,
+    };
+
+    await FirebaseFirestore.instance.collection('regions').add(geojson);
+  }
+
   void _handlePolygonTap(Map<String, dynamic> properties) {
     showDialog(
       context: context,
@@ -101,9 +155,9 @@ class _MapScreenState extends State<MapScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text("Title: ${properties['title_number'] ?? 'N/A'}"),
-            Text("Owner: ${properties['owner'] ?? 'Unknown'}"),
-            Text("Description: ${properties['description'] ?? ''}"),
+            Text("Title: \${properties['title_number'] ?? 'N/A'}"),
+            Text("Owner: \${properties['owner'] ?? 'Unknown'}"),
+            Text("Description: \${properties['description'] ?? ''}"),
           ],
         ),
         actions: [
@@ -117,7 +171,7 @@ class _MapScreenState extends State<MapScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("Map: ${widget.regionKey.toUpperCase()}"),
+        title: Text("Map: \${widget.regionKey.toUpperCase()}"),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.pop(context),
@@ -146,6 +200,8 @@ class _MapScreenState extends State<MapScreen> {
           TileLayer(
             urlTemplate: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
             subdomains: ['a', 'b', 'c'],
+            tileProvider: CancellableNetworkTileProvider(),
+            userAgentPackageName: 'com.example.landledger',
           ),
           if (currentPolygonPoints.length >= 2)
             PolygonLayer(
@@ -175,10 +231,29 @@ class _MapScreenState extends State<MapScreen> {
       floatingActionButton: FloatingActionButton.extended(
         icon: Icon(isDrawing ? Icons.save : Icons.edit),
         label: Text(isDrawing ? "Save Region" : "Add Region"),
-        onPressed: () {
+        onPressed: () async {
+          if (isDrawing && currentPolygonPoints.length >= 3) {
+            await savePolygonGeoJson();
+            setState(() {
+              polygons.add(
+                Polygon(
+                  points: currentPolygonPoints,
+                  borderColor: Colors.purple,
+                  color: Colors.purple.withOpacity(0.4),
+                  borderStrokeWidth: 2,
+                ),
+              );
+              polygonPointsList.add(List.from(currentPolygonPoints));
+              polygonProperties.add({
+                "title_number": "N/A",
+                "owner": FirebaseAuth.instance.currentUser?.email ?? "Unknown",
+                "description": "Manually added region",
+              });
+              currentPolygonPoints.clear();
+            });
+          }
           setState(() {
             isDrawing = !isDrawing;
-            if (!isDrawing) currentPolygonPoints.clear();
           });
         },
       ),

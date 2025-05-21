@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'database_service.dart';
 
 class AddLandRecordScreen extends StatefulWidget {
+  const AddLandRecordScreen({super.key});
+
   @override
   _AddLandRecordScreenState createState() => _AddLandRecordScreenState();
 }
