@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
-import 'dashboard_screen.dart';
+import 'package:landledger_frontend/dashboard_screen.dart';
+import 'package:landledger_frontend/map_screen.dart';
+import 'package:landledger_frontend/my_properties_screen.dart';
+import 'package:landledger_frontend/theme.dart';
 import 'login_screen.dart';
 import 'package:flutter/foundation.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -16,39 +18,46 @@ void main() async {
   runApp(const LandLedgerApp());
 }
 
-class LandLedgerApp extends StatelessWidget {
+class LandLedgerApp extends StatefulWidget {
   const LandLedgerApp({super.key});
+
+  @override
+  State<LandLedgerApp> createState() => _LandLedgerAppState();
+}
+
+class _LandLedgerAppState extends State<LandLedgerApp> {
+  bool isDarkMode = true;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'LandLedger Africa',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        fontFamily: GoogleFonts.roboto().fontFamily,
-        colorScheme: const ColorScheme.light(
-          primary: Color(0xFF006AFF), // Zillow blue
-          secondary: Color(0xFF004EA8),
-          surface: Colors.white,
-          error: Colors.red,
-          onPrimary: Colors.white,
-          onSecondary: Colors.white,
-          onSurface: Colors.black,
-          onError: Colors.white,
-        ),
-        scaffoldBackgroundColor: Color(0xFFF7F8FA),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Colors.white,
-          foregroundColor: Colors.black,
-          elevation: 1,
-          centerTitle: true,
-        ),
-        textTheme: GoogleFonts.robotoTextTheme().copyWith(
-          headlineSmall: const TextStyle(fontWeight: FontWeight.bold),
-          bodyMedium: const TextStyle(fontSize: 16.0),
-        ),
-      ),
+      theme: isDarkMode ? buildDarkTheme() : buildLightTheme(),
+      builder: (context, child) {
+        return Navigator(
+          onGenerateRoute: (_) => MaterialPageRoute(
+            builder: (_) => Stack(
+              children: [
+                child!,
+                Positioned(
+                  top: 40,
+                  right: 16,
+                  child: Tooltip(
+                    message: 'Toggle Theme',
+                    child: FloatingActionButton.small(
+                      backgroundColor: Colors.grey[800],
+                      foregroundColor: Colors.white,
+                      onPressed: () => setState(() => isDarkMode = !isDarkMode),
+                      child: Icon(isDarkMode ? Icons.light_mode : Icons.dark_mode),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
       home: StreamBuilder<User?>(
         stream: FirebaseAuth.instance.authStateChanges(),
         builder: (context, snapshot) {
@@ -57,13 +66,17 @@ class LandLedgerApp extends StatelessWidget {
               body: Center(child: CircularProgressIndicator()),
             );
           } else if (snapshot.hasData) {
-            // Start in Dashboard on the Home tab (index 0)
-            return DashboardScreen(initialTabIndex: 1);
+            return DashboardScreen(
+              regionKey: "Cameroon",
+              geojsonPath: "assets/data/cameroon.geojson",
+              initialTabIndex: 0,
+            );
           } else {
             return LoginScreen();
           }
         },
       ),
     );
+   
   }
 }

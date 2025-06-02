@@ -38,7 +38,12 @@ class _LoginScreenState extends State<LoginScreen> {
 
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) => DashboardScreen(initialTabIndex: 0)),
+        MaterialPageRoute(
+          builder: (_) => DashboardScreen(
+          regionKey: "Cameroon",
+          geojsonPath: "assets/cameroon.geojson",
+          initialTabIndex: 0,
+          ),),
       );
     } catch (e) {
       _setErrorMessage("${isSignUpMode ? 'Sign-up' : 'Login'} failed: ${e.toString()}");
@@ -50,7 +55,11 @@ class _LoginScreenState extends State<LoginScreen> {
     if (user != null) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) => DashboardScreen(initialTabIndex: 0)),
+        MaterialPageRoute(
+          builder: (_) => DashboardScreen(
+          regionKey: "Cameroon",
+          geojsonPath: "assets/cameroon.json",
+          initialTabIndex: 0,)),
       );
     } else {
       _setErrorMessage("Google Sign-In failed.");

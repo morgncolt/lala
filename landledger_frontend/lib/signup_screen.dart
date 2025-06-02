@@ -17,7 +17,13 @@ class _SignUpScreenState extends State<SignUpScreen> {
     if (_formKey.currentState!.validate()) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) => const DashboardScreen()),
+        MaterialPageRoute(
+          builder: (_) => const  DashboardScreen(
+          regionKey: "Cameroon", // or default
+          geojsonPath: "assets/data/cameroon.geojson", // default
+          initialTabIndex: 0,
+          )
+        ),
       );
     }
   }

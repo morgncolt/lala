@@ -1,20 +1,25 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle;
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:landledger_frontend/map_screen.dart';
 import 'package:landledger_frontend/my_properties_screen.dart';
-import 'package:landledger_frontend/login_screen.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:flutter_map_cancellable_tile_provider/flutter_map_cancellable_tile_provider.dart';
+import 'dart:async';
+import 'package:landledger_frontend/home_screen.dart';
+
 
 class DashboardScreen extends StatefulWidget {
-  final String? regionKey;
-  final String? geojsonPath;
+  final String regionKey;
+  final String geojsonPath;
   final int initialTabIndex;
 
   const DashboardScreen({
     super.key,
-    this.regionKey,
-    this.geojsonPath,
+    required this.regionKey,
+    required this.geojsonPath,
     this.initialTabIndex = 0,
   });
 
@@ -22,237 +27,345 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
+
 class _DashboardScreenState extends State<DashboardScreen> {
+  List<Map<String, dynamic>> userProperties = [];
+  List<List<LatLng>> polygonPointsList = [];
+  List<String> documentIds = [];
+  bool isLoading = false;
+  bool hasMore = true;
+  bool showSatellite = false;
+  DocumentSnapshot? lastDocument;
+  final ScrollController _scrollController = ScrollController();
+  final user = FirebaseAuth.instance.currentUser;
+  Timer? _debounce;
   int _selectedIndex = 0;
-  String? _detectedRegionKey;
-  String? _geojsonPath;
 
-  final List<String> _menuItems = [
-    "Home",
-    "Map View",
-    "My Properties",
-    "Add Listing",
-    "Settings"
-  ];
-
-  final Map<String, String> _regionToGeojson = {
-    "Cameroon": "assets/data/cameroon.geojson",
-    "Ghana": "assets/data/ghana.geojson",
-    "Nigeria - Abuja": "assets/data/nigeria_abj.geojson",
-    "Nigeria - Lagos": "assets/data/nigeria_lagos.geojson",
-    "Kenya": "assets/data/kenya.geojson",
-  };
 
   @override
   void initState() {
     super.initState();
-    _selectedIndex = widget.initialTabIndex;
-    _detectedRegionKey = widget.regionKey?.toLowerCase();
-    _geojsonPath = widget.geojsonPath;
-    detectRegionIfNeeded();
+    _selectedIndex = widget.initialTabIndex; // <-- Add this line
+    //fetchProperties();
+    _scrollController.addListener(_onScroll);
   }
 
-  Future<void> detectRegionIfNeeded() async {
-    if (_detectedRegionKey != null && _geojsonPath != null) return;
+  void _onScroll() {
+    if (_debounce?.isActive ?? false) _debounce!.cancel();
+    _debounce = Timer(const Duration(milliseconds: 200), () {
+      if (_scrollController.position.pixels >=
+          _scrollController.position.maxScrollExtent - 200) {
+        if (!isLoading && hasMore) {
+          fetchProperties();
+        }
+      }
+    });
+  }
+
+  Future<void> fetchProperties() async {
+    if (user == null || isLoading || !hasMore || !mounted) return;
+
+    setState(() => isLoading = true);
 
     try {
-      final geoData = await rootBundle.loadString('assets/data/regions.geojson');
-      final regions = json.decode(geoData);
+      Query query = FirebaseFirestore.instance
+          .collection("users")
+          .doc(user?.uid)
+          .collection("regions")
+          .where("region", isEqualTo: widget.regionKey)
+          .orderBy("title_number")
+          .limit(10);
 
-      if (regions['features'].isNotEmpty) {
-        final defaultRegion = regions['features'][0]['properties']['name'];
-        final defaultGeojson = _regionToGeojson[defaultRegion] ?? "assets/data/cameroon.geojson";
+      if (lastDocument != null) {
+        query = query.startAfterDocument(lastDocument!);
+      }
+
+      final snapshot = await query.get();
+
+      if(!mounted) return; // Check if widget is still mounted
+
+      if (snapshot.docs.isNotEmpty) {
+        final props = <Map<String, dynamic>>[];
+        final polys = <List<LatLng>>[];
+        final ids = <String>[];
+
+        for (var doc in snapshot.docs) {
+          final data = doc.data() as Map<String, dynamic>;
+          final coords = (data["coordinates"] as List)
+              .where((c) => c is Map && c["lat"] != null && c["lng"] != null)
+              .map((c) => LatLng(
+                  (c["lat"] as num).toDouble(), (c["lng"] as num).toDouble()))
+              .toList();
+
+          props.add(data);
+          polys.add(coords);
+          ids.add(doc.id);
+        }
 
         setState(() {
-          _detectedRegionKey = defaultRegion.toLowerCase();
-          _geojsonPath = defaultGeojson;
+          userProperties.addAll(props);
+          polygonPointsList.addAll(polys);
+          documentIds.addAll(ids);
+          lastDocument = snapshot.docs.last;
+        });
+      } else {
+        if (!mounted) return; // Check if widget is still mounted
+        setState(() {
+          hasMore = false;
         });
       }
     } catch (e) {
-      setState(() {
-        _detectedRegionKey = "cameroon";
-        _geojsonPath = "assets/data/cameroon.geojson";
-      });
+      debugPrint("Error fetching paginated properties: $e");
+    } finally {
+      if (mounted) {
+        setState(() => isLoading = false);
+      }
     }
   }
 
-  void logoutUser(BuildContext context) async {
-    await FirebaseAuth.instance.signOut();
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (context) => const LoginScreen()),
-      (route) => false,
-    );
-  }
+  Future<void> deleteProperty(int index) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null ||  !mounted) return;
 
-  @override
-  Widget build(BuildContext context) {
-    Widget content;
+    final docId = documentIds[index];
 
-    switch (_selectedIndex) {
-      case 0:
-        content = Padding(
-          padding: const EdgeInsets.all(32.0),
-          child: Center(
-            child: Card(
-              elevation: 4,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              child: Padding(
-                padding: const EdgeInsets.all(24.0),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.location_on, size: 48, color: Colors.blue),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Hi ${FirebaseAuth.instance.currentUser?.displayName ?? "there"}!',
-                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 12),
-                    const Text('Select your region to get started.'),
-                    const SizedBox(height: 20),
-                    DropdownButtonFormField<String>(
-                      value: _detectedRegionKey,
-                      hint: const Text("Choose your region"),
-                      decoration: const InputDecoration(
-                        border: OutlineInputBorder(),
-                        filled: true,
-                        fillColor: Colors.white,
-                      ),
-                      items: _regionToGeojson.keys.map((String region) {
-                        return DropdownMenuItem<String>(
-                          value: region.toLowerCase(),
-                          child: Text(region),
-                        );
-                      }).toList(),
-                      onChanged: (String? newValue) {
-                        if (newValue != null) {
-                          setState(() {
-                            _detectedRegionKey = newValue;
-                            _geojsonPath = _regionToGeojson.entries
-                                .firstWhere((e) => e.key.toLowerCase() == newValue)
-                                .value;
-                          });
-                        }
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    ElevatedButton.icon(
-                      onPressed: (_detectedRegionKey != null && _geojsonPath != null)
-                          ? () => setState(() => _selectedIndex = 1)
-                          : null,
-                      icon: const Icon(Icons.map),
-                      label: const Text("Enter Land Map"),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.blue,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      _detectedRegionKey == null
-                          ? "You can select a region manually above."
-                          : "Region selected: $_detectedRegionKey",
-                      style: const TextStyle(fontSize: 12, color: Colors.grey),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        );
-        break;
-      case 1:
-        content = (_geojsonPath != null && _detectedRegionKey != null)
-            ? MapScreen(regionKey: _detectedRegionKey!, geojsonPath: _geojsonPath!)
-            : const Center(child: CircularProgressIndicator());
-        break;
-      case 2:
-        content = (_geojsonPath != null && _detectedRegionKey != null)
-            ? MyPropertiesScreen(regionKey: _detectedRegionKey!, geojsonPath: _geojsonPath!)
-            : const Center(child: CircularProgressIndicator());
-        break;
-      case 3:
-        content = const Center(child: Text("Add Listing Page (Coming Soon)"));
-        break;
-      case 4:
-        content = const Center(child: Text("Settings Page (Coming Soon)"));
-        break;
-      default:
-        content = const Center(child: Text("Page not found"));
-    }
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("LandLedger Africa"),
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text("Delete Property"),
+        content: const Text("Are you sure you want to delete this saved region?"),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            tooltip: 'Logout',
-            onPressed: () => logoutUser(context),
+          TextButton(
+            onPressed: () {
+              if (mounted) Navigator.pop(context, false);
+            },
+            child: const Text("Cancel"),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              if (mounted) Navigator.pop(context, true);
+            },
+            child: const Text("Delete"),
           ),
         ],
       ),
+    );
+
+    if (!mounted || confirm != true) return;
+
+    await FirebaseFirestore.instance
+        .collection("users")
+        .doc(user.uid)
+        .collection("regions")
+        .doc(docId)
+        .delete();
+
+    if (!mounted) return;
+
+    setState(() {
+      userProperties.removeAt(index);
+      polygonPointsList.removeAt(index);
+      documentIds.removeAt(index);
+    });
+  }
+
+ @override
+  Widget build(BuildContext context) {
+    final screens = [
+      HomeScreen(
+        currentRegionKey: widget.regionKey,
+        onRegionSelected: (regionKey, geojsonPath) {
+          if (!mounted) return;
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => DashboardScreen(
+                regionKey: regionKey,
+                geojsonPath: geojsonPath,
+                initialTabIndex: 1,
+              ),
+            ),
+          );
+        },
+      ),
+      MapScreen(
+        regionKey: widget.regionKey,
+        geojsonPath: widget.geojsonPath,
+        onForceStayInMapTab: () {
+          if (!mounted) return;
+          setState(() {
+            _selectedIndex = 1; // Force the tab to stay on Map View
+          });
+        },
+      ),
+      MyPropertiesScreen(
+        regionKey: widget.regionKey,
+        geojsonPath: widget.geojsonPath,
+      ),
+    ];
+
+
+    return Scaffold(
       body: Row(
         children: [
-          Column(
-            children: [
-              Expanded(
-                child: NavigationRail(
-                  selectedIndex: _selectedIndex,
-                  onDestinationSelected: (int index) {
-                    setState(() {
-                      _selectedIndex = index;
-                    });
-                  },
-                  labelType: NavigationRailLabelType.all,
-                  destinations: const [
-                    NavigationRailDestination(
-                      icon: Icon(Icons.home_outlined),
-                      selectedIcon: Icon(Icons.home),
-                      label: Text('Home'),
-                    ),
-                    NavigationRailDestination(
-                      icon: Icon(Icons.map_outlined),
-                      selectedIcon: Icon(Icons.map),
-                      label: Text('Map View'),
-                    ),
-                    NavigationRailDestination(
-                      icon: Icon(Icons.list_alt_outlined),
-                      selectedIcon: Icon(Icons.list_alt),
-                      label: Text('My Properties'),
-                    ),
-                    NavigationRailDestination(
-                      icon: Icon(Icons.add_circle_outline),
-                      selectedIcon: Icon(Icons.add_circle),
-                      label: Text('Add Listing'),
-                    ),
-                    NavigationRailDestination(
-                      icon: Icon(Icons.settings_outlined),
-                      selectedIcon: Icon(Icons.settings),
-                      label: Text('Settings'),
-                    ),
-                  ],
-                ),
+          // 🚨 NavigationRail on the left
+          NavigationRail(
+            selectedIndex: _selectedIndex,
+            onDestinationSelected: (index) {
+              if (!mounted) return; // Ensure widget is still mounted
+              setState(() {
+                _selectedIndex = index;
+              });
+            },
+            labelType: NavigationRailLabelType.all,
+            leading: const SizedBox(height: 32),
+            destinations: const [
+              NavigationRailDestination(
+                icon: Icon(Icons.home),
+                label: Text("Home"),
               ),
-              const Divider(thickness: 1),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 16.0),
-                child: IconButton(
-                  icon: const Icon(Icons.logout, color: Colors.red),
-                  tooltip: 'Logout',
-                  onPressed: () => logoutUser(context),
-                ),
+              NavigationRailDestination(
+                icon: Icon(Icons.map),
+                label: Text("Map View"),
+              ),
+              NavigationRailDestination(
+                icon: Icon(Icons.list),
+                label: Text("My Properties"),
               ),
             ],
           ),
+
+          // 🧱 Vertical Divider between nav and content
           const VerticalDivider(thickness: 1, width: 1),
-          Expanded(child: content),
+
+          // 📦 Main screen content
+          Expanded(
+            child: Column(
+              children: [
+                AppBar(
+                  title: Text(
+                    _selectedIndex == 0
+                        ? "Home (${widget.regionKey.toUpperCase()})"
+                        : _selectedIndex == 1
+                            ? "Map View (${widget.regionKey.toUpperCase()})"
+                            : "My Properties (${widget.regionKey.toUpperCase()})",
+                  ),
+                  actions: [
+                    if (_selectedIndex != 0) // 👈 Only show on Map & Properties tabs
+                      IconButton(
+                        icon: Icon(showSatellite ? Icons.satellite_alt : Icons.map),
+                        onPressed: () {
+                          if (!mounted) return; // Ensure widget is still mounted
+                          setState(() {
+                            showSatellite = !showSatellite;
+                          });
+                        },
+                      ),
+                  ],
+                ),
+
+                Expanded(child: screens[_selectedIndex]),
+              ],
+            ),
+          ),
         ],
       ),
     );
   }
+
+  
+  Widget buildMyPropertiesList() {
+    return isLoading
+        ? const Center(child: CircularProgressIndicator())
+        : userProperties.isEmpty
+            ? const Center(child: Text("No saved properties found in this region."))
+            : ListView.builder(
+                controller: _scrollController,
+                itemCount: userProperties.length + 1,
+                itemBuilder: (context, index) {
+                  if (index == userProperties.length) {
+                    return hasMore
+                        ? const Padding(
+                            padding: EdgeInsets.all(16),
+                            child: Center(child: CircularProgressIndicator()),
+                          )
+                        : const Padding(
+                            padding: EdgeInsets.all(16),
+                            child: Center(child: Text("No more properties to load.")),
+                          );
+                  }
+
+                  final poly = polygonPointsList[index];
+                  final prop = userProperties[index];
+
+                  return GestureDetector(
+                    onTap: () async{
+                      if (!mounted) return; // Ensure widget is still mounted
+                      await deleteProperty(index);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => MapScreen(
+                            regionKey: widget.regionKey,
+                            geojsonPath: widget.geojsonPath,
+                            highlightPolygon: polygonPointsList[index],
+                          ),
+                        ),
+                      );
+                    },
+                    child: Card(
+                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: SizedBox(
+                              height: 150,
+                              child: FlutterMap(
+                                options: MapOptions(
+                                  center: poly[0],
+                                  zoom: 14,
+                                  interactiveFlags: InteractiveFlag.none,
+                                ),
+                                children: [
+                                  TileLayer(
+                                    urlTemplate: showSatellite
+                                        ? 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                                        : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                    subdomains: showSatellite ? [] : ['a', 'b', 'c'],
+                                    userAgentPackageName: 'com.example.landledger',
+                                    tileProvider: CancellableNetworkTileProvider(),
+                                  ),
+                                  PolygonLayer(
+                                    polygons: [
+                                      Polygon(
+                                        points: poly,
+                                        color: Colors.purple.withOpacity(0.4),
+                                        borderColor: Colors.purple,
+                                        borderStrokeWidth: 2,
+                                      )
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          ListTile(
+                            title: Text(prop['title_number'] ?? 'Untitled Region'),
+                            subtitle: Text("Owner: ${prop['owner'] ?? 'Unknown'}\n${prop['description'] ?? ''}"),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.delete, color: Colors.red),
+                              onPressed: () => deleteProperty(index),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              );
+  }
+
+
 }
