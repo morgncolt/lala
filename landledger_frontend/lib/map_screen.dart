@@ -15,7 +15,7 @@ class MapScreen extends StatefulWidget {
   final String geojsonPath;
   final bool startDrawing;
   final List<LatLng>? highlightPolygon;
-
+  final bool centerOnRegion; // 🆕 add this
   final void Function()? onForceStayInMapTab; 
 
 
@@ -26,6 +26,7 @@ class MapScreen extends StatefulWidget {
     this.startDrawing = false,
     this.highlightPolygon,
     this.onForceStayInMapTab, // <-- And this
+    this.centerOnRegion = true, // 🆕 default to true
 
   });
 
@@ -54,17 +55,29 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
+
     fetchProperties();
     _scrollController.addListener(_onScroll);
     loadGeoJsonBoundary();
     centerToUserLocation();
+
+    // 🟡 Center on region boundary if specified
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (widget.centerOnRegion && boundaryPolygons.isNotEmpty) {
+        final bounds = LatLngBounds.fromPoints(boundaryPolygons.expand((p) => p).toList());
+        mapController.fitBounds(bounds, options: const FitBoundsOptions(padding: EdgeInsets.all(60)));
+      }
+    });
+
+    // 🟢 Center on specific highlighted polygon after slight delay
     if (widget.highlightPolygon != null && widget.highlightPolygon!.isNotEmpty) {
-      Future.delayed(Duration(milliseconds: 500), () {
+      Future.delayed(const Duration(milliseconds: 500), () {
         final bounds = LatLngBounds.fromPoints(widget.highlightPolygon!);
         mapController.fitBounds(bounds, options: const FitBoundsOptions(padding: EdgeInsets.all(40)));
       });
     }
   }
+
 
   void _onScroll() {
     if (_debounce?.isActive ?? false) _debounce!.cancel();
@@ -86,23 +99,29 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> loadGeoJsonBoundary() async {
     try {
+      debugPrint("📦 Loading GeoJSON from ${widget.geojsonPath}");
       final geojsonStr = await rootBundle.loadString(widget.geojsonPath);
       final Map<String, dynamic> geoData = json.decode(geojsonStr);
       final features = geoData['features'] as List<dynamic>;
 
       final parsedPolygons = <List<LatLng>>[];
+
       for (var feature in features) {
         final geometry = feature['geometry'];
-        if (geometry['type'] == 'Polygon') {
+        final type = geometry['type'];
+
+        if (type == 'Polygon') {
           final coords = geometry['coordinates'][0] as List;
-          parsedPolygons.add(coords.map<LatLng>((coord) =>
-              LatLng(coord[1].toDouble(), coord[0].toDouble())).toList());
-        } else if (geometry['type'] == 'MultiPolygon') {
+          parsedPolygons.add(coords
+              .map<LatLng>((coord) => LatLng(coord[1].toDouble(), coord[0].toDouble()))
+              .toList());
+        } else if (type == 'MultiPolygon') {
           final multiCoords = geometry['coordinates'] as List;
           for (var polygon in multiCoords) {
             final coords = polygon[0] as List;
-            parsedPolygons.add(coords.map<LatLng>((coord) =>
-                LatLng(coord[1].toDouble(), coord[0].toDouble())).toList());
+            parsedPolygons.add(coords
+                .map<LatLng>((coord) => LatLng(coord[1].toDouble(), coord[0].toDouble()))
+                .toList());
           }
         }
       }
@@ -110,8 +129,19 @@ class _MapScreenState extends State<MapScreen> {
       if (mounted) {
         setState(() => boundaryPolygons = parsedPolygons);
       }
+
+      debugPrint("✅ Loaded ${parsedPolygons.length} boundary polygons");
+
+      // ⬇️ Auto-center the map on the region if requested
+      if (widget.centerOnRegion && parsedPolygons.isNotEmpty) {
+        final allPoints = parsedPolygons.expand((p) => p).toList();
+        final bounds = LatLngBounds.fromPoints(allPoints);
+        mapController.fitBounds(bounds, options: const FitBoundsOptions(padding: EdgeInsets.all(60)));
+        debugPrint("🎯 Centered map on loaded region bounds");
+      }
+
     } catch (e) {
-      debugPrint("❌ GeoJSON load failed: $e");
+      debugPrint("❌ Failed to load GeoJSON: $e");
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text("Failed to load boundary GeoJSON.")),
@@ -119,6 +149,7 @@ class _MapScreenState extends State<MapScreen> {
       }
     }
   }
+
 
 
   Future<void> fetchProperties() async {
@@ -379,104 +410,181 @@ class _MapScreenState extends State<MapScreen> {
   Widget build(BuildContext context) {
     try {
       return Scaffold(
-        appBar: AppBar(
-          title: Text("Map View (${widget.regionKey.toUpperCase()})"),
-          actions: [
-            IconButton(
-              icon: Icon(showSatellite ? Icons.satellite_alt : Icons.map),
-              onPressed: () => setState(() => showSatellite = !showSatellite),
-            ),
-          ],
-        ),
-        body: FlutterMap(
-          mapController: mapController,
-          options: MapOptions(
-            center: LatLng(0, 0),
-            zoom: 5,
-            onTap: (_, tapPoint) async {
-              if (!mounted) return;
-
-              if (isDrawing) {
-                setState(() => currentPolygonPoints.add(tapPoint));
-                return;
-              }
-
-              for (int i = 0; i < polygonPointsList.length; i++) {
-                if (pointInPolygon(tapPoint, polygonPointsList[i])) {
-                  final prop = userProperties[i];
-                  await Future.delayed(const Duration(milliseconds: 50));
-                  if (!mounted) return;
-                  showPropertyDetails(prop);
-                  break;
-                }
-              }
-            },
-          ),
+        body: Stack(
           children: [
-            TileLayer(
-              urlTemplate: showSatellite
-                  ? 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
-                  : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              subdomains: showSatellite ? [] : ['a', 'b', 'c'],
-              userAgentPackageName: 'com.example.landledger',
-              tileProvider: CancellableNetworkTileProvider(),
-            ),
-            PolygonLayer(
-              polygons: [
-                if (currentPolygonPoints.isNotEmpty)
-                  Polygon(
-                    points: currentPolygonPoints,
-                    borderColor: const Color.fromARGB(255, 46, 176, 130),
-                    color: const Color.fromARGB(255, 46, 23, 173).withOpacity(0.5),
-                    borderStrokeWidth: 2,
-                  ),
-                ...polygonPointsList.asMap().entries.map((entry) {
-                  final index = entry.key;
-                  final points = entry.value;
-                  final prop = userProperties[index];
-                  return Polygon(
-                    points: points,
-                    color: const Color.fromARGB(255, 54, 244, 127).withOpacity(0.4),
-                    borderColor: const Color.fromARGB(255, 2, 58, 23),
-                    borderStrokeWidth: 2,
-                    isFilled: true,
-                    label: "Property",
-                    labelStyle: const TextStyle(color: Colors.white, fontSize: 12),
-                  );
-                }),
-                if (widget.highlightPolygon != null && widget.highlightPolygon!.isNotEmpty)
-                  Polygon(
-                    points: widget.highlightPolygon!,
-                    color: const Color.fromARGB(255, 54, 244, 127).withOpacity(0.4),
-                    borderColor: const Color.fromARGB(255, 2, 58, 23),
-                    borderStrokeWidth: 3,
-                  ),
-                ...boundaryPolygons.map(
-                  (polygon) => Polygon(
-                    points: polygon,
-                    borderColor: const Color.fromARGB(255, 1, 83, 3),
-                    color: Colors.transparent,
-                    borderStrokeWidth: 1,
-                  ),
+            // 🗺️ Main Map Layer
+            FlutterMap(
+              mapController: mapController,
+              options: MapOptions(
+                center: LatLng(0, 0),
+                zoom: 5,
+                onTap: (_, tapPoint) async {
+                  if (!mounted) return;
+
+                  if (isDrawing) {
+                    setState(() => currentPolygonPoints.add(tapPoint));
+                    return;
+                  }
+
+                  for (int i = 0; i < polygonPointsList.length; i++) {
+                    if (pointInPolygon(tapPoint, polygonPointsList[i])) {
+                      final prop = userProperties[i];
+                      await Future.delayed(const Duration(milliseconds: 50));
+                      if (!mounted) return;
+                      showPropertyDetails(prop);
+                      break;
+                    }
+                  }
+                },
+              ),
+              children: [
+                TileLayer(
+                  urlTemplate: showSatellite
+                      ? 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                      : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  subdomains: showSatellite ? [] : ['a', 'b', 'c'],
+                  userAgentPackageName: 'com.example.landledger',
+                  tileProvider: CancellableNetworkTileProvider(),
+                ),
+                PolygonLayer(
+                  polygons: [
+                    if (currentPolygonPoints.isNotEmpty)
+                      Polygon(
+                        points: currentPolygonPoints,
+                        borderColor: const Color.fromARGB(255, 46, 176, 130),
+                        color: const Color.fromARGB(255, 46, 23, 173).withOpacity(0.5),
+                        borderStrokeWidth: 2,
+                      ),
+                    ...polygonPointsList.asMap().entries.map((entry) {
+                      final points = entry.value;
+                      return Polygon(
+                        points: points,
+                        color: const Color.fromARGB(255, 54, 244, 127).withOpacity(0.4),
+                        borderColor: const Color.fromARGB(255, 2, 58, 23),
+                        borderStrokeWidth: 2,
+                        isFilled: true,
+                        label: "Property",
+                        labelStyle: const TextStyle(color: Colors.white, fontSize: 12),
+                      );
+                    }),
+                    if (widget.highlightPolygon != null && widget.highlightPolygon!.isNotEmpty)
+                      Polygon(
+                        points: widget.highlightPolygon!,
+                        color: const Color.fromARGB(255, 54, 244, 127).withOpacity(0.4),
+                        borderColor: const Color.fromARGB(255, 2, 58, 23),
+                        borderStrokeWidth: 3,
+                      ),
+                    ...boundaryPolygons.map(
+                      (polygon) => Polygon(
+                        points: polygon,
+                        borderColor: const Color.fromARGB(255, 1, 83, 3),
+                        color: Colors.transparent,
+                        borderStrokeWidth: 1,
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
+
+            // 📝 Floating Action Button to go backward
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 8,
+              left: 8,
+              child: Material(
+                color: Colors.transparent,
+                child: IconButton(
+                  icon: Icon(Icons.arrow_back, color: const Color.fromARGB(255, 29, 29, 29)),
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+              ),
+            ),
+            // 🎛️ Zoom, Center, and Satellite Buttons (Satellite is 5th)
+            Positioned(
+              top: 100, // ⬅️ Adjusted from 40 to 100
+              right: 16,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  // Zoom In 🔍
+                  FloatingActionButton.small(
+                    heroTag: "btn-zoom-in",
+                    backgroundColor: Colors.black,
+                    child: const Icon(Icons.add, color: Colors.white),
+                    onPressed: () {
+                      mapController.move(mapController.center, mapController.zoom + 1);
+                    },
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Zoom Out ➖
+                  FloatingActionButton.small(
+                    heroTag: "btn-zoom-out",
+                    backgroundColor: Colors.black,
+                    child: const Icon(Icons.remove, color: Colors.white),
+                    onPressed: () {
+                      mapController.move(mapController.center, mapController.zoom - 1);
+                    },
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Center Region 🔲
+                  FloatingActionButton.small(
+                    heroTag: "btn-center",
+                    backgroundColor: Colors.white,
+                    child: const Icon(Icons.center_focus_strong, color: Colors.black),
+                    tooltip: "Center View",
+                    onPressed: () {
+                      if (boundaryPolygons.isNotEmpty) {
+                        final bounds = LatLngBounds.fromPoints(
+                          boundaryPolygons.expand((p) => p).toList(),
+                        );
+                        mapController.fitBounds(bounds, options: const FitBoundsOptions(padding: EdgeInsets.all(60)));
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Satellite Toggle 🛰️
+                  FloatingActionButton.small(
+                    heroTag: "btn-satellite-toggle",
+                    backgroundColor: Colors.black,
+                    child: Icon(
+                      showSatellite ? Icons.satellite_alt : Icons.map,
+                      color: Colors.white,
+                    ),
+                    tooltip: "Toggle Satellite",
+                    onPressed: () {
+                      setState(() => showSatellite = !showSatellite);
+                    },
+                  ),
+                ],
+              ),
+            ),
+
+
+            // ➕ Draw/Add Button
+            Positioned(
+              bottom: 20,
+              right: 16,
+              child: FloatingActionButton.extended(
+                icon: Icon(isDrawing ? Icons.save : Icons.edit),
+                label: Text(isDrawing ? "Save Region" : "Add Region"),
+                onPressed: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("🟢 Button Pressed")),
+                  );
+                  debugPrint("🟢 FAB tapped - isDrawing=$isDrawing, points=${currentPolygonPoints.length}");
+                  if (isDrawing && currentPolygonPoints.length >= 3) {
+                    savePolygon();
+                  } else {
+                    setState(() => isDrawing = !isDrawing);
+                  }
+                },
+              ),
+            ),
           ],
-        ),
-        floatingActionButton: FloatingActionButton.extended(
-          icon: Icon(isDrawing ? Icons.save : Icons.edit),
-          label: Text(isDrawing ? "Save Region" : "Add Region"),
-          onPressed: () {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text("🟢 Button Pressed")),
-            );
-            print("🟢 FAB tapped - isDrawing=$isDrawing, points=${currentPolygonPoints.length}");
-            if (isDrawing && currentPolygonPoints.length >= 3) {
-              savePolygon();
-            } else {
-              setState(() => isDrawing = !isDrawing);
-            }
-          },
         ),
       );
     } catch (e, st) {
@@ -492,4 +600,7 @@ class _MapScreenState extends State<MapScreen> {
       );
     }
   }
+
+
+
 }

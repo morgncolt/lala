@@ -4,23 +4,20 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:latlong2/latlong.dart';
 import 'map_screen.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
 import 'package:flutter_map_cancellable_tile_provider/flutter_map_cancellable_tile_provider.dart';
 import 'dart:async';
-
 
 class MyPropertiesScreen extends StatefulWidget {
   final String regionKey;
   final String geojsonPath;
   final List<LatLng>? highlightPolygon;
 
-
   const MyPropertiesScreen({
-    super.key,
+    Key? key,
     required this.regionKey,
     required this.geojsonPath,
     this.highlightPolygon,
-  });
+  }) : super(key: key);
 
   @override
   State<MyPropertiesScreen> createState() => _MyPropertiesScreenState();
@@ -30,13 +27,20 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
   List<Map<String, dynamic>> userProperties = [];
   List<List<LatLng>> polygonPointsList = [];
   List<String> documentIds = [];
+  List<bool> showSatelliteList = [];
   bool isLoading = false;
   bool hasMore = true;
   DocumentSnapshot? lastDocument;
   final ScrollController _scrollController = ScrollController();
   final user = FirebaseAuth.instance.currentUser;
-  bool showSatellite = false;
   Timer? _debounce;
+
+  @override
+  void initState() {
+    super.initState();
+    fetchProperties();
+    _scrollController.addListener(_onScroll);
+  }
 
   @override
   void dispose() {
@@ -45,46 +49,32 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     super.dispose();
   }
 
-  @override
-  void initState() {
-    super.initState();
-    fetchProperties();
-    _scrollController.addListener(_onScroll);
-  }
-  
   void _onScroll() {
     if (_debounce?.isActive ?? false) _debounce!.cancel();
     _debounce = Timer(const Duration(milliseconds: 200), () {
       if (_scrollController.position.pixels >=
           _scrollController.position.maxScrollExtent - 200) {
-        if (!isLoading && hasMore) {
-          fetchProperties();
-        }
+        if (!isLoading && hasMore) fetchProperties();
       }
     });
   }
 
   Future<void> fetchProperties() async {
     if (user == null || isLoading || !hasMore) return;
-
     setState(() => isLoading = true);
 
     try {
-      Query query = FirebaseFirestore.instance
-          .collection("users")
-          .doc(user?.uid)
-          .collection("regions")
-          .where("region", isEqualTo: widget.regionKey)
-          .orderBy("title_number")
+      var query = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user!.uid)
+          .collection('regions')
+          .where('region', isEqualTo: widget.regionKey)
+          .orderBy('title_number')
           .limit(10);
 
-      // Use the last fetched document to start after it
-      if (lastDocument != null) {
-        query = query.startAfterDocument(lastDocument!);
-      }
+      if (lastDocument != null) query = query.startAfterDocument(lastDocument!);
 
       final snapshot = await query.get();
-
       if (snapshot.docs.isNotEmpty) {
         final props = <Map<String, dynamic>>[];
         final polys = <List<LatLng>>[];
@@ -92,10 +82,9 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
 
         for (var doc in snapshot.docs) {
           final data = doc.data() as Map<String, dynamic>;
-          final coords = (data["coordinates"] as List)
-              .where((c) => c is Map && c["lat"] != null && c["lng"] != null)
-              .map((c) => LatLng(
-                  (c["lat"] as num).toDouble(), (c["lng"] as num).toDouble()))
+          final coords = (data['coordinates'] as List)
+              .where((c) => c is Map && c['lat'] != null && c['lng'] != null)
+              .map((c) => LatLng((c['lat'] as num).toDouble(), (c['lng'] as num).toDouble()))
               .toList();
 
           props.add(data);
@@ -107,19 +96,16 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
           userProperties.addAll(props);
           polygonPointsList.addAll(polys);
           documentIds.addAll(ids);
+          showSatelliteList.addAll(List.filled(props.length, false));
           lastDocument = snapshot.docs.last;
         });
       } else {
-        setState(() {
-          hasMore = false;
-        });
+        setState(() => hasMore = false);
       }
     } catch (e) {
-      debugPrint("Error fetching paginated properties: $e");
+      debugPrint('Error fetching properties: $e');
     } finally {
-      if (mounted) {
-        setState(() => isLoading = false);
-      }
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
@@ -128,179 +114,151 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     if (user == null || !mounted) return;
 
     final docId = documentIds[index];
-
     final confirm = await showDialog<bool>(
       context: context,
-      builder: (BuildContext dialogContext) => AlertDialog(
-        title: const Text("Delete Property"),
-        content: const Text("Are you sure you want to delete this saved region?"),
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Property'),
+        content: const Text('Are you sure you want to delete this region?'),
         actions: [
-          TextButton(
-            onPressed: () {
-              if (mounted) Navigator.of(dialogContext).pop(false);
-            },
-            child: const Text("Cancel"),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              if (mounted) Navigator.of(dialogContext).pop(true);
-            },
-            child: const Text("Delete"),
-          ),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Delete')),
         ],
       ),
     );
 
-    if (!mounted || confirm != true) return;
-
+    if (confirm != true) return;
     try {
       await FirebaseFirestore.instance
-          .collection("users")
+          .collection('users')
           .doc(user.uid)
-          .collection("regions")
+          .collection('regions')
           .doc(docId)
           .delete();
-    } catch (e, st) {
+
       if (!mounted) return;
-      debugPrint("❌ Failed to delete Firestore doc: $e");
+      setState(() {
+        userProperties.removeAt(index);
+        polygonPointsList.removeAt(index);
+        documentIds.removeAt(index);
+        showSatelliteList.removeAt(index);
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Region deleted successfully')));
+    } catch (e, st) {
+      debugPrint('Failed to delete: $e');
       debugPrintStack(stackTrace: st);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Failed to delete region.")),
-      );
-      return;
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to delete region.')));
     }
+  }
 
-    if (!mounted) return;
-
-    setState(() {
-      userProperties.removeAt(index);
-      polygonPointsList.removeAt(index);
-      documentIds.removeAt(index);
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("✅ Region deleted successfully")),
+  void _showDetails(int index) {
+    final prop = userProperties[index];
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.grey[900],
+        title: Text(prop['title_number'] ?? 'Details', style: const TextStyle(color: Colors.white)),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Owner: ${prop['owner'] ?? 'Unknown'}', style: const TextStyle(color: Colors.white)),
+              Text('Wallet: ${prop['wallet'] ?? 'N/A'}', style: const TextStyle(color: Colors.white)),
+              Text('Area: ${prop['area']?.toString() ?? 'N/A'} km²', style: const TextStyle(color: Colors.white)),
+              Text('Description: ${prop['description'] ?? ''}', style: const TextStyle(color: Colors.white)),
+              Text('Timestamp: ${prop['timestamp'] ?? ''}', style: const TextStyle(color: Colors.white)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Close', style: TextStyle(color: Colors.white))),
+        ],
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text("My Properties (${widget.regionKey.toUpperCase()})"),
-        actions: [
-          IconButton(
-            icon: Icon(showSatellite ? Icons.satellite_alt : Icons.map),
-            onPressed: () {
-              setState(() {
-                showSatellite = !showSatellite;
-              });
-            },
-          ),
-        ],
-      ),
-
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : userProperties.isEmpty
-              ? const Center(child: Text("No saved properties found in this region."))
-              : ListView.builder(
-                  controller: _scrollController,
-                  itemCount: userProperties.length + 1, // for the loading/footer
-                  itemBuilder: (context, index) {
-                      if (index == userProperties.length) {
-                        return hasMore
-                            ? const Padding(
-                                padding: EdgeInsets.all(16),
-                                child: Center(child: CircularProgressIndicator()),
-                              )
-                            : const Padding(
-                                padding: EdgeInsets.all(16),
-                                child: Center(child: Text("No more properties to load.")),
-                              );
-                    }
-                  
-                    final poly = polygonPointsList[index];
-                    final prop = userProperties[index];
-
-                    return GestureDetector(
-                      onTap: () async {
-                        //if (!mounted) return;
-                        await Future.delayed(const Duration(milliseconds: 100)); // slight delay for better UX
-                        if (!mounted) return; // check if widget is still mounted
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => MapScreen(
-                              regionKey: widget.regionKey,
-                              geojsonPath: widget.geojsonPath,
-                              highlightPolygon: polygonPointsList[index],
+      body: SafeArea(
+        child: userProperties.isEmpty && !isLoading
+            ? const Center(child: Text('No saved properties found.'))
+            : ListView.builder(
+                controller: _scrollController,
+                padding: EdgeInsets.zero,
+                itemCount: userProperties.length + (hasMore ? 1 : 0),
+                itemBuilder: (context, index) {
+                  if (index == userProperties.length) {
+                    return const Padding(padding: EdgeInsets.all(16), child: Center(child: CircularProgressIndicator()));
+                  }
+                  final prop = userProperties[index];
+                  final poly = polygonPointsList[index];
+                  final isSatellite = showSatelliteList[index];
+                  return GestureDetector(
+                    onTap: () {
+                      Navigator.push(context, MaterialPageRoute(builder: (_) => MapScreen(
+                        regionKey: widget.regionKey,
+                        geojsonPath: widget.geojsonPath,
+                        highlightPolygon: poly,
+                      )));
+                    },
+                    child: Card(
+                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      elevation: 4,
+                      child: Column(
+                        children: [
+                          ClipRRect(
+                            borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                            child: SizedBox(
+                              height: 160,
+                              child: FlutterMap(
+                                options: MapOptions(center: poly[0], zoom: 14, interactiveFlags: InteractiveFlag.none),
+                                children: [
+                                  TileLayer(
+                                    urlTemplate: isSatellite
+                                        ? 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                                        : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                    subdomains: isSatellite ? [] : ['a', 'b', 'c'],
+                                    userAgentPackageName: 'com.example.landledger',
+                                    tileProvider: CancellableNetworkTileProvider(),
+                                  ),
+                                  PolygonLayer(polygons: [
+                                    Polygon(points: poly, borderColor: Colors.green.shade700, color: Colors.green.withOpacity(0.3), borderStrokeWidth: 2),
+                                  ]),
+                                ],
+                              ),
                             ),
                           ),
-                        );
-                        
-                      },
-                      child: AnimatedScale(
-                        scale: 1.0,
-                        duration: const Duration(milliseconds: 150),
-                        child: Card(
-                          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              // your map thumbnail
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(12),
-                                child: SizedBox(
-                                  height: 150,
-                                  child: FlutterMap(
-                                    options: MapOptions(
-                                      center: polygonPointsList[index][0],
-                                      zoom: 14,
-                                      interactiveFlags: InteractiveFlag.none,
-                                    ),
-                                    children: [
-                                      TileLayer(
-                                        urlTemplate: showSatellite
-                                            ? 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
-                                            : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                                        subdomains: showSatellite ? [] : ['a', 'b', 'c'],
-                                        userAgentPackageName: 'com.example.landledger',
-                                        tileProvider: CancellableNetworkTileProvider(),
-                                      ),
-                                      PolygonLayer(
-                                        polygons: [
-                                          Polygon(
-                                            points: polygonPointsList[index],
-                                            color: const Color.fromARGB(255, 76, 175, 134).withOpacity(0.4),
-                                            borderColor: const Color.fromARGB(255, 76, 175, 134),
-                                            borderStrokeWidth: 2,
-                                          )
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                              // Property info
-                              ListTile(
-                                title: Text(prop['title_number'] ?? 'Untitled Region'),
-                                subtitle: Text("Owner: ${prop['owner'] ?? 'Unknown'}\n${prop['description'] ?? ''}"),
-                                trailing: IconButton(
-                                  icon: const Icon(Icons.delete, color: Color.fromARGB(255, 214, 10, 10)),
-                                  onPressed: () async {
-                                    if (!mounted) return;
-                                    await deleteProperty(index);
-                                  },
-                                ),
-                              ),
-                            ],
+                          ListTile(
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            title: Text(prop['title_number'] ?? 'Untitled'),
+                            subtitle: Text('Owner: ${prop['owner'] ?? 'Unknown'}\n${prop['description'] ?? ''}'),
+                            trailing: PopupMenuButton<String>(
+                              onSelected: (value) {
+                                if (value == 'satellite') {
+                                  setState(() => showSatelliteList[index] = !isSatellite);
+                                } else if (value == 'delete') {
+                                  deleteProperty(index);
+                                } else if (value == 'details') {
+                                  _showDetails(index);
+                                }
+                              },
+                              itemBuilder: (_) => [
+                                PopupMenuItem(value: 'satellite', child: Text(isSatellite ? 'Normal View' : 'Satellite View')),
+                                PopupMenuItem(value: 'details', child: const Text('Details')),
+                                PopupMenuItem(value: 'delete', child: Text('Delete Property', style: TextStyle(color: Colors.red))),
+                              ],
+                            ),
                           ),
-                        ),
+                        ],
                       ),
-                    );
-                  },
-                ),
+                    ),
+                  );
+                },
+              ),
+      ),
     );
   }
 }

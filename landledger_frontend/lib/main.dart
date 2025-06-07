@@ -1,20 +1,25 @@
+// lib/main.dart
+
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'firebase_options.dart';
-import 'package:landledger_frontend/dashboard_screen.dart';
-import 'package:landledger_frontend/map_screen.dart';
-import 'package:landledger_frontend/my_properties_screen.dart';
-import 'package:landledger_frontend/theme.dart';
-import 'login_screen.dart';
 import 'package:flutter/foundation.dart';
+
+import 'firebase_options.dart';
+import 'login_screen.dart';
+import 'dashboard_screen.dart';
+import 'theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
   if (kIsWeb) {
     await FirebaseAuth.instance.setPersistence(Persistence.LOCAL);
   }
+
   runApp(const LandLedgerApp());
 }
 
@@ -34,49 +39,61 @@ class _LandLedgerAppState extends State<LandLedgerApp> {
       title: 'LandLedger Africa',
       debugShowCheckedModeBanner: false,
       theme: isDarkMode ? buildDarkTheme() : buildLightTheme(),
+
+      // Named routes for navigation if you need them:
+      initialRoute: '/login',
+      routes: {
+        '/login': (_) => const LoginScreen(),
+        '/dashboard': (_) => const DashboardScreen(
+              regionKey: 'Cameroon',
+              geojsonPath: 'assets/data/cameroon.geojson',
+            ),
+      },
+
+      // Wrap your entire app in a real Overlay so Tooltip can work:
       builder: (context, child) {
-        return Navigator(
-          onGenerateRoute: (_) => MaterialPageRoute(
-            builder: (_) => Stack(
-              children: [
-                child!,
-                Positioned(
-                  top: 40,
-                  right: 16,
-                  child: Tooltip(
-                    message: 'Toggle Theme',
-                    child: FloatingActionButton.small(
-                      backgroundColor: Colors.grey[800],
-                      foregroundColor: Colors.white,
-                      onPressed: () => setState(() => isDarkMode = !isDarkMode),
-                      child: Icon(isDarkMode ? Icons.light_mode : Icons.dark_mode),
+        return Overlay(
+          initialEntries: [
+            OverlayEntry(builder: (_) => child!),
+            OverlayEntry(builder: (_) {
+              return Positioned(
+                top: 16,
+                right: 16,
+                child: Tooltip(
+                  message: 'Toggle Theme',
+                  child: FloatingActionButton.small(
+                    backgroundColor: Theme.of(context).colorScheme.surface,
+                    onPressed: () => setState(() => isDarkMode = !isDarkMode),
+                    child: Icon(
+                      isDarkMode ? Icons.light_mode : Icons.dark_mode,
+                      size: 20,
                     ),
                   ),
                 ),
-              ],
-            ),
-          ),
+              );
+            }),
+          ],
         );
       },
+
+      // Drive initial screen by auth state:
       home: StreamBuilder<User?>(
         stream: FirebaseAuth.instance.authStateChanges(),
-        builder: (context, snapshot) {
+        builder: (ctx, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Scaffold(
               body: Center(child: CircularProgressIndicator()),
             );
-          } else if (snapshot.hasData) {
-            return DashboardScreen(
-              regionKey: "Cameroon",
-              geojsonPath: "assets/data/cameroon.geojson",
-              initialTabIndex: 0,
-            );
-          } else {
-            return LoginScreen();
           }
+          if (snapshot.hasData) {
+            return const DashboardScreen(
+              regionKey: 'Cameroon',
+              geojsonPath: 'assets/data/cameroon.geojson',
+            );
+          }
+          return const LoginScreen();
         },
       ),
     );
-   
   }
 }
