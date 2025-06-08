@@ -49,11 +49,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool isLoading = false;
   bool hasMore = true;
   DocumentSnapshot? lastDocument;
-  // 1) Add your own dark mode flag here
-  bool isDarkMode = true;
 
-  // map view toggle
+  // UI state
+  bool isDarkMode = true;
   bool showSatellite = false;
+  bool isRailExtended = false;                // <-- collapsible rail state
 
   // scroll debounce
   final ScrollController _scrollController = ScrollController();
@@ -180,221 +180,207 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-@override
-Widget build(BuildContext context) {
-  // 1) Define your nav entries as before
-  final navEntries = <_NavEntry>[
-    _NavEntry(
-      icon: Icons.home,
-      label: 'Home',
-      screen: HomeScreen(
-        currentRegionKey: widget.regionKey,
-        onRegionSelected: (newKey, newPath) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => DashboardScreen(
-                regionKey: newKey,
-                geojsonPath: newPath,
-                initialTabIndex: 1,
+  @override
+  Widget build(BuildContext context) {
+    final navEntries = <_NavEntry>[
+      _NavEntry(
+        icon: Icons.home,
+        label: 'Home',
+        screen: HomeScreen(
+          currentRegionKey: widget.regionKey,
+          onRegionSelected: (newKey, newPath) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (_) => DashboardScreen(
+                  regionKey: newKey,
+                  geojsonPath: newPath,
+                  initialTabIndex: 1,
+                ),
               ),
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
-    ),
-    _NavEntry(
-      icon: Icons.list,
-      label: 'My Properties',
-      screen: MyPropertiesScreen(
-        regionKey: widget.regionKey,
-        geojsonPath: widget.geojsonPath,
+      _NavEntry(
+        icon: Icons.list,
+        label: 'My Properties',
+        screen: MyPropertiesScreen(
+          regionKey: widget.regionKey,
+          geojsonPath: widget.geojsonPath,
+        ),
       ),
-    ),
-    _NavEntry(
-      icon: Icons.map,
-      label: 'Map View',
-      screen: MapScreen(
-        regionKey: widget.regionKey,
-        geojsonPath: widget.geojsonPath,
-        onForceStayInMapTab: () => setState(() => _selectedIndex = 2),
-        centerOnRegion: true,
+      _NavEntry(
+        icon: Icons.map,
+        label: 'Map View',
+        screen: MapScreen(
+          regionKey: widget.regionKey,
+          geojsonPath: widget.geojsonPath,
+          onForceStayInMapTab: () => setState(() => _selectedIndex = 2),
+          centerOnRegion: true,
+        ),
       ),
-    ),
-     _NavEntry(
+      _NavEntry(
         icon: Icons.bar_chart,
         label: 'LandLedger',
-        screen: const Center(child: Text('LandLedger 🔜')), 
+        screen: const Center(child: Text('LandLedger 🔜')),
       ),
       _NavEntry(
         icon: Icons.bar_chart,
         label: 'CIF',
-        screen: const Center(child: Text('CIF 🔜')), 
+        screen: const Center(child: Text('CIF 🔜')),
       ),
       _NavEntry(
         icon: Icons.settings,
         label: 'Settings',
         screen: const Center(child: Text('Settings 🔜')),
       ),
-    
-  ];
+    ];
 
-  return Scaffold(
-    // 2) No AppBar—everything lives in the body
-    body: Stack(
-      children: [
-        // ── Main layout: NavigationRail + content ──
-        Row(
-          children: [
-            Theme(
-              data: Theme.of(context).copyWith(
-                navigationRailTheme: NavigationRailThemeData(
-                  backgroundColor: Colors.white,
-                  elevation: 6,
-                  indicatorColor:
-                      Theme.of(context).primaryColor.withOpacity(0.15),
-                  indicatorShape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  selectedIconTheme: IconThemeData(
-                    color: Theme.of(context).primaryColor,
-                    size: 28,
-                  ),
-                  unselectedIconTheme: IconThemeData(
-                    color: Colors.grey.shade600,
-                    size: 24,
-                  ),
-                  selectedLabelTextStyle: TextStyle(
-                    color: Theme.of(context).primaryColor,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  unselectedLabelTextStyle:
-                      TextStyle(color: Colors.grey.shade600),
+    return Scaffold(
+      body: Row(
+        children: [
+          Theme(
+            data: Theme.of(context).copyWith(
+              navigationRailTheme: NavigationRailThemeData(
+                backgroundColor: Colors.white,
+                elevation: 6,
+                indicatorColor: Theme.of(context).primaryColor.withOpacity(0.15),
+                indicatorShape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
                 ),
+                selectedIconTheme: IconThemeData(
+                  color: Theme.of(context).primaryColor,
+                  size: 28,
+                ),
+                unselectedIconTheme: IconThemeData(
+                  color: Colors.grey.shade600,
+                  size: 24,
+                ),
+                selectedLabelTextStyle: TextStyle(
+                  color: Theme.of(context).primaryColor,
+                  fontWeight: FontWeight.w600,
+                ),
+                unselectedLabelTextStyle: TextStyle(color: Colors.grey.shade600),
               ),
-              child: NavigationRail(
-                selectedIndex: _selectedIndex,
-                onDestinationSelected: (i) {
-                  if (navEntries[i].icon == Icons.logout) {
+            ),
+            child: NavigationRail(
+              extended: isRailExtended,
+              minWidth: 56,              // width when collapsed
+              minExtendedWidth: 120,     // width when expanded
+              labelType: NavigationRailLabelType.none,
+              selectedIndex: _selectedIndex,
+              onDestinationSelected: (i) {
+                if (navEntries[i].icon == Icons.logout) {
+                  FirebaseAuth.instance.signOut();
+                  Navigator.pushReplacementNamed(context, '/login');
+                } else {
+                  setState(() => _selectedIndex = i);
+                }
+              },
+              leading: Column(
+                children: [
+                  const SizedBox(height: 16),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      color: Theme.of(context).primaryColor,
+                      width: 40,
+                      height: 40,
+                      child: const Icon(Icons.terrain, color: Colors.white),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  IconButton(
+                    icon: Icon(
+                      isRailExtended
+                          ? Icons.chevron_left
+                          : Icons.chevron_right,
+                      color: Colors.grey.shade600,
+                    ),
+                    onPressed: () => setState(() => isRailExtended = !isRailExtended),
+                  ),
+                ],
+              ),
+              destinations: navEntries
+                  .map((e) => NavigationRailDestination(
+                        icon: Icon(e.icon),
+                        label: Text(e.label),
+                      ))
+                  .toList(),
+              trailing: Padding(
+                padding: const EdgeInsets.only(bottom: 24),
+                child: IconButton(
+                  icon: const Icon(Icons.logout),
+                  onPressed: () {
                     FirebaseAuth.instance.signOut();
                     Navigator.pushReplacementNamed(context, '/login');
-                  } else {
-                    setState(() => _selectedIndex = i);
-                  }
-                },
-                groupAlignment: -0.9,
-                leading: Column(
-                  children: [
-                    const SizedBox(height: 16),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Container(
-                        color: Theme.of(context).primaryColor,
-                        width: 40,
-                        height: 40,
-                        child: const Icon(Icons.terrain, color: Colors.white),
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                  ],
-                ),
-                labelType: NavigationRailLabelType.all,
-                destinations: navEntries
-                    .map((e) => NavigationRailDestination(
-                          icon: Icon(e.icon),
-                          label: Text(e.label),
-                        ))
-                    .toList(),
-                trailing: Padding(
-                  padding: const EdgeInsets.only(bottom: 24),
-                  child: IconButton(
-                    icon: const Icon(Icons.logout),
-                    onPressed: () {
-                      FirebaseAuth.instance.signOut();
-                      Navigator.pushReplacementNamed(context, '/login');
-                    },
-                  ),
+                  },
                 ),
               ),
             ),
+          ),
 
-            const VerticalDivider(thickness: 1, width: 1),
+          const VerticalDivider(thickness: 1, width: 1),
 
-            Expanded(
-              child: Stack(
-                children: [
-                  // 3) Show the selected screen
-                  Positioned.fill(
-                    child: navEntries[_selectedIndex].screen!,
-                  ),
+          Expanded(
+            child: Stack(
+              children: [
+                // Selected screen
+                Positioned.fill(
+                  child: navEntries[_selectedIndex].screen!,
+                ),
 
-                  // 4) Optional search bar on tabs 1 & 2
-                  if (_selectedIndex == 1 || _selectedIndex == 2)
-                    Positioned(
-                      top: 20,
-                      left: 80,
-                      child: SizedBox(
-                        width: 320,
-                        child: Material(
-                          elevation: 5,
-                          borderRadius: BorderRadius.circular(30),
-                          color: Colors.white,
-                          child: TextField(
-                            decoration: InputDecoration(
-                              hintText: _selectedIndex == 1
-                                  ? 'Search properties…'
-                                  : 'Search map…',
-                              prefixIcon: const Icon(Icons.search),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(30),
-                                borderSide: BorderSide.none,
-                              ),
-                              contentPadding:
-                                  const EdgeInsets.symmetric(
-                                horizontal: 20,
-                                vertical: 14,
-                              ),
+                // Search bar for list/map
+                if (_selectedIndex == 1 || _selectedIndex == 2)
+                  Positioned(
+                    top: 20,
+                    left: isRailExtended ? 80 : 56,
+                    child: SizedBox(
+                      width: 320,
+                      child: Material(
+                        elevation: 5,
+                        borderRadius: BorderRadius.circular(30),
+                        color: Colors.white,
+                        child: TextField(
+                          decoration: InputDecoration(
+                            hintText: _selectedIndex == 1
+                                ? 'Search properties…'
+                                : 'Search map…',
+                            prefixIcon: const Icon(Icons.search),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(30),
+                              borderSide: BorderSide.none,
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 20,
+                              vertical: 14,
                             ),
                           ),
                         ),
                       ),
                     ),
-                ],
-              ),
-            ),
-          ],
-        ),
-
-        // ── 5) Floating theme‐toggle button ──
-        Positioned(
-          top: 16,
-          right: 16,
-          child: Tooltip(
-            message: 'Toggle Theme',
-            child: FloatingActionButton.small(
-              backgroundColor: Theme.of(context).primaryColor,
-              foregroundColor: Colors.white,
-              onPressed: () => setState(() {
-                isDarkMode = !isDarkMode;
-                // propagate this up to MaterialApp via callback or Provider
-              }),
-              child:
-                  Icon(isDarkMode ? Icons.light_mode : Icons.dark_mode),
+                  ),
+              ],
             ),
           ),
-        ),
-      ],
-    ),
-  );
-}
+        ],
+      ),
+      // Theme toggle
+      floatingActionButton: FloatingActionButton.small(
+        tooltip: 'Toggle Theme',
+        backgroundColor: Theme.of(context).primaryColor,
+        foregroundColor: Colors.white,
+        onPressed: () => setState(() => isDarkMode = !isDarkMode),
+        child: Icon(isDarkMode ? Icons.light_mode : Icons.dark_mode),
+      ),
+    );
+  }
 
-  // keep this if you still need a separate list view builder
+  // Legacy list builder (if still needed)
   Widget buildMyPropertiesList() {
-    if (isLoading) {
-      return const Center(child: CircularProgressIndicator());
-    } else if (userProperties.isEmpty) {
-      return const Center(child: Text("No saved properties found in this region."));
-    }
+    if (isLoading) return const Center(child: CircularProgressIndicator());
+    if (userProperties.isEmpty) return const Center(child: Text("No saved properties found in this region."));
 
     return ListView.builder(
       controller: _scrollController,
@@ -417,7 +403,6 @@ Widget build(BuildContext context) {
 
         return GestureDetector(
           onTap: () async {
-            if (!mounted) return;
             await deleteProperty(index);
             Navigator.push(
               context,
@@ -450,7 +435,7 @@ Widget build(BuildContext context) {
                           urlTemplate: showSatellite
                               ? 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
                               : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                          subdomains: showSatellite ? [] : ['a', 'b', 'c'],
+                          subdomains: showSatellite ? [] : ['a','b','c'],
                           userAgentPackageName: 'com.example.landledger',
                           tileProvider: CancellableNetworkTileProvider(),
                         ),
