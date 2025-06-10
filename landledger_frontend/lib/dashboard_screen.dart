@@ -13,16 +13,12 @@ import 'package:landledger_frontend/landledger_screen.dart';
 import 'package:landledger_frontend/cif_screen.dart';
 import 'package:landledger_frontend/settings_screen.dart';
 
-// NAV ENTRY MODEL
+// Simple model for navigation entries
 class _NavEntry {
   final IconData icon;
   final String label;
-  final Widget? screen;
-  _NavEntry({
-    required this.icon,
-    required this.label,
-    this.screen,
-  });
+  final Widget screen;
+  _NavEntry({required this.icon, required this.label, required this.screen});
 }
 
 class DashboardScreen extends StatefulWidget {
@@ -42,7 +38,7 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  // pagination + data
+  // Data + pagination
   List<Map<String, dynamic>> userProperties = [];
   List<List<LatLng>> polygonPointsList = [];
   List<String> documentIds = [];
@@ -50,31 +46,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool hasMore = true;
   DocumentSnapshot? lastDocument;
 
-  // UI state
-  bool isDarkMode = true;
-  bool showSatellite = false;
-  bool isRailExtended = false;                // <-- collapsible rail state
-
-  // scroll debounce
   final ScrollController _scrollController = ScrollController();
   Timer? _debounce;
 
-  // auth
-  final user = FirebaseAuth.instance.currentUser;
-
-  // nav
+  // UI state
+  bool isDarkMode = true;
+  bool showSatellite = false;
+  bool isRailExtended = false;
+  bool _showMoreMenu = false;
   int _selectedIndex = 0;
+
+  // Auth
+  final user = FirebaseAuth.instance.currentUser;
 
   @override
   void initState() {
     super.initState();
-    _selectedIndex = widget.initialTabIndex;
+    // Clamp initial tab between 0 and 2 (Home, List, Map)
+    _selectedIndex = widget.initialTabIndex.clamp(0, 2);
     _scrollController.addListener(_onScroll);
-    // optionally fetchProperties() here if you want initial load
+    fetchProperties();
   }
 
   void _onScroll() {
-    if (_debounce?.isActive ?? false) _debounce!.cancel();
+    _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 200), () {
       if (_scrollController.position.pixels >=
           _scrollController.position.maxScrollExtent - 200) {
@@ -85,40 +80,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> fetchProperties() async {
     if (user == null || isLoading || !hasMore || !mounted) return;
-
     setState(() => isLoading = true);
 
     try {
-      Query<Map<String, dynamic>> query = FirebaseFirestore.instance
-          .collection("users")
+      var query = FirebaseFirestore.instance
+          .collection('users')
           .doc(user!.uid)
-          .collection("regions")
-          .where("region", isEqualTo: widget.regionKey)
-          .orderBy("title_number")
+          .collection('regions')
+          .where('region', isEqualTo: widget.regionKey)
+          .orderBy('title_number')
           .limit(10);
 
-      if (lastDocument != null) {
-        query = query.startAfterDocument(lastDocument!);
-      }
+      if (lastDocument != null) query = query.startAfterDocument(lastDocument!);
 
       final snapshot = await query.get();
       if (!mounted) return;
 
-      if (snapshot.docs.isNotEmpty) {
+      if (snapshot.docs.isEmpty) {
+        setState(() => hasMore = false);
+      } else {
         final props = <Map<String, dynamic>>[];
         final polys = <List<LatLng>>[];
         final ids = <String>[];
 
         for (var doc in snapshot.docs) {
           final data = doc.data();
-          final coords = (data["coordinates"] as List)
-              .where((c) => c is Map && c["lat"] != null && c["lng"] != null)
-              .map((c) => LatLng(
-                    (c["lat"] as num).toDouble(),
-                    (c["lng"] as num).toDouble(),
-                  ))
+          final coords = (data['coordinates'] as List)
+              .where((c) => c is Map && c['lat'] != null && c['lng'] != null)
+              .map((c) => LatLng((c['lat'] as num).toDouble(), (c['lng'] as num).toDouble()))
               .toList();
-
           props.add(data);
           polys.add(coords);
           ids.add(doc.id);
@@ -130,11 +120,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           documentIds.addAll(ids);
           lastDocument = snapshot.docs.last;
         });
-      } else {
-        setState(() => hasMore = false);
       }
     } catch (e) {
-      debugPrint("Error fetching paginated properties: $e");
+      debugPrint('Error fetching properties: \$e');
     } finally {
       if (mounted) setState(() => isLoading = false);
     }
@@ -142,35 +130,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> deleteProperty(int index) async {
     if (user == null || !mounted) return;
-    final docId = documentIds[index];
-
+    final id = documentIds[index];
     final confirm = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text("Delete Property"),
-        content: const Text("Are you sure you want to delete this saved region?"),
+        title: const Text('Delete Property'),
+        content: const Text('Are you sure you want to delete this saved region?'),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text("Cancel"),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text("Delete"),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
         ],
       ),
     );
-
     if (confirm != true || !mounted) return;
 
     await FirebaseFirestore.instance
-        .collection("users")
+        .collection('users')
         .doc(user!.uid)
-        .collection("regions")
-        .doc(docId)
+        .collection('regions')
+        .doc(id)
         .delete();
-
     if (!mounted) return;
 
     setState(() {
@@ -180,208 +159,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final navEntries = <_NavEntry>[
-      _NavEntry(
-        icon: Icons.home,
-        label: 'Home',
-        screen: HomeScreen(
-          currentRegionKey: widget.regionKey,
-          onRegionSelected: (newKey, newPath) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (_) => DashboardScreen(
-                  regionKey: newKey,
-                  geojsonPath: newPath,
-                  initialTabIndex: 1,
-                ),
-              ),
-            );
-          },
-        ),
-      ),
-      _NavEntry(
-        icon: Icons.list,
-        label: 'My Properties',
-        screen: MyPropertiesScreen(
-          regionKey: widget.regionKey,
-          geojsonPath: widget.geojsonPath,
-        ),
-      ),
-      _NavEntry(
-        icon: Icons.map,
-        label: 'Map View',
-        screen: MapScreen(
-          regionKey: widget.regionKey,
-          geojsonPath: widget.geojsonPath,
-          onForceStayInMapTab: () => setState(() => _selectedIndex = 2),
-          centerOnRegion: true,
-        ),
-      ),
-      _NavEntry(
-        icon: Icons.bar_chart,
-        label: 'LandLedger',
-        screen: const Center(child: Text('LandLedger 🔜')),
-      ),
-      _NavEntry(
-        icon: Icons.bar_chart,
-        label: 'CIF',
-        screen: const Center(child: Text('CIF 🔜')),
-      ),
-      _NavEntry(
-        icon: Icons.settings,
-        label: 'Settings',
-        screen: const Center(child: Text('Settings 🔜')),
-      ),
-    ];
-
-    return Scaffold(
-      body: Row(
-        children: [
-          Theme(
-            data: Theme.of(context).copyWith(
-              navigationRailTheme: NavigationRailThemeData(
-                backgroundColor: Colors.white,
-                elevation: 6,
-                indicatorColor: Theme.of(context).primaryColor.withOpacity(0.15),
-                indicatorShape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                selectedIconTheme: IconThemeData(
-                  color: Theme.of(context).primaryColor,
-                  size: 28,
-                ),
-                unselectedIconTheme: IconThemeData(
-                  color: Colors.grey.shade600,
-                  size: 24,
-                ),
-                selectedLabelTextStyle: TextStyle(
-                  color: Theme.of(context).primaryColor,
-                  fontWeight: FontWeight.w600,
-                ),
-                unselectedLabelTextStyle: TextStyle(color: Colors.grey.shade600),
-              ),
-            ),
-            child: NavigationRail(
-              extended: isRailExtended,
-              minWidth: 56,              // width when collapsed
-              minExtendedWidth: 120,     // width when expanded
-              labelType: NavigationRailLabelType.none,
-              selectedIndex: _selectedIndex,
-              onDestinationSelected: (i) {
-                if (navEntries[i].icon == Icons.logout) {
-                  FirebaseAuth.instance.signOut();
-                  Navigator.pushReplacementNamed(context, '/login');
-                } else {
-                  setState(() => _selectedIndex = i);
-                }
-              },
-              leading: Column(
-                children: [
-                  const SizedBox(height: 16),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Container(
-                      color: Theme.of(context).primaryColor,
-                      width: 40,
-                      height: 40,
-                      child: const Icon(Icons.terrain, color: Colors.white),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  IconButton(
-                    icon: Icon(
-                      isRailExtended
-                          ? Icons.chevron_left
-                          : Icons.chevron_right,
-                      color: Colors.grey.shade600,
-                    ),
-                    onPressed: () => setState(() => isRailExtended = !isRailExtended),
-                  ),
-                ],
-              ),
-              destinations: navEntries
-                  .map((e) => NavigationRailDestination(
-                        icon: Icon(e.icon),
-                        label: Text(e.label),
-                      ))
-                  .toList(),
-              trailing: Padding(
-                padding: const EdgeInsets.only(bottom: 24),
-                child: IconButton(
-                  icon: const Icon(Icons.logout),
-                  onPressed: () {
-                    FirebaseAuth.instance.signOut();
-                    Navigator.pushReplacementNamed(context, '/login');
-                  },
-                ),
-              ),
-            ),
-          ),
-
-          const VerticalDivider(thickness: 1, width: 1),
-
-          Expanded(
-            child: Stack(
-              children: [
-                // Selected screen
-                Positioned.fill(
-                  child: navEntries[_selectedIndex].screen!,
-                ),
-
-                // Search bar for list/map
-                if (_selectedIndex == 1 || _selectedIndex == 2)
-                  Positioned(
-                    top: 20,
-                    left: isRailExtended ? 80 : 56,
-                    child: SizedBox(
-                      width: 320,
-                      child: Material(
-                        elevation: 5,
-                        borderRadius: BorderRadius.circular(30),
-                        color: Colors.white,
-                        child: TextField(
-                          decoration: InputDecoration(
-                            hintText: _selectedIndex == 1
-                                ? 'Search properties…'
-                                : 'Search map…',
-                            prefixIcon: const Icon(Icons.search),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(30),
-                              borderSide: BorderSide.none,
-                            ),
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 20,
-                              vertical: 14,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-      // Theme toggle
-      floatingActionButton: FloatingActionButton.small(
-        tooltip: 'Toggle Theme',
-        backgroundColor: Theme.of(context).primaryColor,
-        foregroundColor: Colors.white,
-        onPressed: () => setState(() => isDarkMode = !isDarkMode),
-        child: Icon(isDarkMode ? Icons.light_mode : Icons.dark_mode),
-      ),
-    );
-  }
-
-  // Legacy list builder (if still needed)
-  Widget buildMyPropertiesList() {
+  // List builder for "My Properties" tab
+  Widget _buildList() {
     if (isLoading) return const Center(child: CircularProgressIndicator());
-    if (userProperties.isEmpty) return const Center(child: Text("No saved properties found in this region."));
-
+    if (userProperties.isEmpty) return const Center(child: Text('No saved properties found in this region.'));
     return ListView.builder(
       controller: _scrollController,
       itemCount: userProperties.length + 1,
@@ -394,13 +175,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 )
               : const Padding(
                   padding: EdgeInsets.all(16),
-                  child: Center(child: Text("No more properties to load.")),
+                  child: Center(child: Text('No more properties to load.')),
                 );
         }
-
         final poly = polygonPointsList[index];
         final prop = userProperties[index];
-
         return GestureDetector(
           onTap: () async {
             await deleteProperty(index);
@@ -425,17 +204,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: SizedBox(
                     height: 150,
                     child: FlutterMap(
-                      options: MapOptions(
-                        center: poly.first,
-                        zoom: 14,
-                        interactiveFlags: InteractiveFlag.none,
-                      ),
+                      options: MapOptions(center: poly.first, zoom: 14, interactiveFlags: InteractiveFlag.none),
                       children: [
                         TileLayer(
                           urlTemplate: showSatellite
                               ? 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
                               : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                          subdomains: showSatellite ? [] : ['a','b','c'],
+                          subdomains: showSatellite ? [] : ['a', 'b', 'c'],
                           userAgentPackageName: 'com.example.landledger',
                           tileProvider: CancellableNetworkTileProvider(),
                         ),
@@ -446,7 +221,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               color: Colors.purple.withOpacity(0.4),
                               borderColor: Colors.purple,
                               borderStrokeWidth: 2,
-                            )
+                            ),
                           ],
                         ),
                       ],
@@ -468,6 +243,148 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         );
       },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Primary tabs: Home, List, Map
+    final primaryNavEntries = <_NavEntry>[
+      _NavEntry(
+        icon: Icons.home,
+        label: 'Home',
+        screen: HomeScreen(
+          currentRegionKey: widget.regionKey,
+          onRegionSelected: (k, p) => Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => DashboardScreen(
+                regionKey: k,
+                geojsonPath: p,
+                initialTabIndex: 1,
+              ),
+            ),
+          ),
+        ),
+      ),
+      _NavEntry(icon: Icons.list, label: 'My Properties', screen: _buildList()),
+      _NavEntry(
+        icon: Icons.map,
+        label: 'Map View',
+        screen: MapScreen(
+          regionKey: widget.regionKey,
+          geojsonPath: widget.geojsonPath,
+          onForceStayInMapTab: () => setState(() => _selectedIndex = 2),
+          centerOnRegion: true,
+        ),
+      ),
+    ];
+
+    // Secondary tabs in "More" submenu
+    final secondaryNavEntries = <_NavEntry>[
+      _NavEntry(icon: Icons.bar_chart, label: 'LandLedger', screen: const Center(child: Text('LandLedger 🔜'))),
+      _NavEntry(icon: Icons.assessment, label: 'CIF', screen: const Center(child: Text('CIF 🔜'))),
+      _NavEntry(icon: Icons.settings, label: 'Settings', screen: const Center(child: Text('Settings 🔜'))),
+    ];
+
+    // Build NavigationRail destinations dynamically
+    final destinations = <NavigationRailDestination>[
+      ...primaryNavEntries.map((e) => NavigationRailDestination(icon: Icon(e.icon), label: Text(e.label))),
+      NavigationRailDestination(icon: Icon(_showMoreMenu ? Icons.expand_less : Icons.more_horiz), label: const Text('More')),
+      if (_showMoreMenu)
+        ...secondaryNavEntries.map((e) => NavigationRailDestination(icon: Icon(e.icon), label: Text(e.label))),
+    ];
+
+    // Ensure selected index never exceeds available destinations
+    final safeIndex = _selectedIndex < destinations.length ? _selectedIndex : 0;
+
+    return Scaffold(
+      body: Row(
+        children: [
+          // Rail
+          Theme(
+            data: Theme.of(context).copyWith(
+              navigationRailTheme: NavigationRailThemeData(
+                backgroundColor: Colors.white,
+                elevation: 6,
+                indicatorColor: Theme.of(context).primaryColor.withOpacity(0.15),
+                indicatorShape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                selectedIconTheme: IconThemeData(color: Theme.of(context).primaryColor, size: 28),
+                unselectedIconTheme: IconThemeData(color: Colors.grey.shade600, size: 24),
+                selectedLabelTextStyle: TextStyle(color: Theme.of(context).primaryColor, fontWeight: FontWeight.w600),
+                unselectedLabelTextStyle: TextStyle(color: Colors.grey.shade600),
+              ),
+            ),
+            child: NavigationRail(
+              extended: isRailExtended,
+              minWidth: 56,
+              minExtendedWidth: 120,
+              labelType: NavigationRailLabelType.none,
+              selectedIndex: safeIndex,
+              onDestinationSelected: (i) {
+                if (i == primaryNavEntries.length) {
+                  setState(() => _showMoreMenu = !_showMoreMenu);
+                } else {
+                  setState(() {
+                    _selectedIndex = i;
+                    _showMoreMenu = false;
+                  });
+                }
+              },
+              leading: Column(
+                children: [
+                  const SizedBox(height: 16),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(color: Theme.of(context).primaryColor, width: 40, height: 40, child: const Icon(Icons.terrain, color: Colors.white)),
+                  ),
+                  const SizedBox(height: 12),
+                  IconButton(
+                    icon: Icon(isRailExtended ? Icons.chevron_left : Icons.chevron_right, color: Colors.grey.shade600),
+                    onPressed: () => setState(() => isRailExtended = !isRailExtended),
+                  ),
+                ],
+              ),
+              destinations: destinations,
+              trailing: Padding(
+                padding: const EdgeInsets.only(bottom: 24),
+                child: IconButton(
+                  icon: const Icon(Icons.logout),
+                  onPressed: () {
+                    FirebaseAuth.instance.signOut();
+                    Navigator.pushReplacementNamed(context, '/login');
+                  },
+                ),
+              ),
+            ),
+          ),
+
+          const VerticalDivider(thickness: 1, width: 1),
+
+          // Main content
+          Expanded(
+            child: Builder(
+              builder: (_) {
+                if (_selectedIndex < primaryNavEntries.length) {
+                  return primaryNavEntries[_selectedIndex].screen;
+                } else {
+                  final secIndex = _selectedIndex - primaryNavEntries.length - 1;
+                  return secondaryNavEntries[secIndex].screen;
+                }
+              },
+            ),
+          ),
+        ],
+      ),
+
+      // Theme toggle FAB
+      floatingActionButton: FloatingActionButton.small(
+        tooltip: 'Toggle Theme',
+        backgroundColor: Theme.of(context).primaryColor,
+        foregroundColor: Colors.white,
+        onPressed: () => setState(() => isDarkMode = !isDarkMode),
+        child: Icon(isDarkMode ? Icons.light_mode : Icons.dark_mode),
+      ),
     );
   }
 }
