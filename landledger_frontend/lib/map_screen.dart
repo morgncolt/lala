@@ -15,9 +15,8 @@ class MapScreen extends StatefulWidget {
   final String geojsonPath;
   final bool startDrawing;
   final List<LatLng>? highlightPolygon;
-  final bool centerOnRegion; // 🆕 add this
+  final bool centerOnRegion; 
   final void Function()? onForceStayInMapTab; 
-
 
   const MapScreen({
     super.key,
@@ -27,7 +26,6 @@ class MapScreen extends StatefulWidget {
     this.highlightPolygon,
     this.onForceStayInMapTab, // <-- And this
     this.centerOnRegion = true, // 🆕 default to true
-
   });
 
   @override
@@ -51,11 +49,12 @@ class _MapScreenState extends State<MapScreen> {
   List<String> documentIds = [];
   Timer? _debounce;
   List<List<LatLng>> boundaryPolygons = [];
+  List<Polygon> polygons = [];
+
 
   @override
   void initState() {
     super.initState();
-
     fetchProperties();
     _scrollController.addListener(_onScroll);
     loadGeoJsonBoundary();
@@ -78,6 +77,14 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _scrollController.dispose();
+    descriptionController.dispose();
+    walletController.dispose();
+    super.dispose();
+  }
 
   void _onScroll() {
     if (_debounce?.isActive ?? false) _debounce!.cancel();
@@ -150,50 +157,73 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
-
-
   Future<void> fetchProperties() async {
     if (user == null || isLoading || !hasMore) return;
+
     setState(() => isLoading = true);
+
     try {
       Query query = FirebaseFirestore.instance
           .collection("users")
-          .doc(user?.uid)
+          .doc(user!.uid)
           .collection("regions")
           .where("region", isEqualTo: widget.regionKey)
           .orderBy("title_number")
           .limit(10);
-      if (lastDocument != null) query = query.startAfterDocument(lastDocument!);
+
+      if (lastDocument != null) {
+        query = query.startAfterDocument(lastDocument!);
+      }
+
       final snapshot = await query.get();
+
       if (snapshot.docs.isNotEmpty) {
         final props = <Map<String, dynamic>>[];
         final polys = <List<LatLng>>[];
         final ids = <String>[];
+
         for (var doc in snapshot.docs) {
           final data = doc.data() as Map<String, dynamic>;
+
           final coords = (data["coordinates"] as List)
               .where((c) => c is Map && c["lat"] != null && c["lng"] != null)
-              .map((c) => LatLng((c["lat"] as num).toDouble(), (c["lng"] as num).toDouble()))
+              .map((c) => LatLng(
+                    (c["lat"] as num).toDouble(),
+                    (c["lng"] as num).toDouble(),
+                  ))
               .toList();
+
           props.add(data);
           polys.add(coords);
           ids.add(doc.id);
         }
+
         setState(() {
-          userProperties = props;
+          userProperties.addAll(props);
           polygonPointsList.addAll(polys);
           documentIds.addAll(ids);
           lastDocument = snapshot.docs.last;
+
+          // 🟢 Create visual polygon overlays
+          polygons = polygonPointsList.map((points) {
+            return Polygon(
+              points: points,
+              color: Colors.green.withOpacity(0.3),
+              borderColor: Colors.green,
+              borderStrokeWidth: 2.0,
+            );
+          }).toList();
         });
       } else {
         setState(() => hasMore = false);
       }
     } catch (e) {
-      debugPrint("Error fetching paginated properties: $e");
+      debugPrint("❌ Error fetching paginated properties: $e");
     } finally {
       if (mounted) setState(() => isLoading = false);
     }
   }
+
 
   double calculateArea(List<LatLng> points) {
     double area = 0;
@@ -208,7 +238,7 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> savePolygon() async {
     print("🚨 savePolygon() called");
     try {
-      if (currentPolygonPoints.length < 3 || user == null || !mounted){
+      if (currentPolygonPoints.length < 3 || user == null || !mounted) {
         print("⛔ Invalid state: user=$user, mounted=$mounted, points=${currentPolygonPoints.length}");
         return;
       }
@@ -224,7 +254,7 @@ class _MapScreenState extends State<MapScreen> {
 
       final confirm = await showDialog<bool>(
         context: context,
-          builder: (BuildContext dialogContext) {  
+        builder: (BuildContext dialogContext) {  
           return AlertDialog(
             title: const Text("Save Region"),
             content: SingleChildScrollView(
@@ -246,13 +276,13 @@ class _MapScreenState extends State<MapScreen> {
             actions: [
               TextButton(
                 onPressed: () {
-                  if (mounted) Navigator.of(dialogContext).pop(false); // 👈 use dialogContext
+                  if (mounted) Navigator.of(dialogContext).pop(false);
                 },
                 child: const Text("Cancel"),
               ),
               ElevatedButton(
                 onPressed: () {
-                  if (mounted) Navigator.of(dialogContext).pop(true); // 👈 use dialogContext
+                  if (mounted) Navigator.of(dialogContext).pop(true);
                 },
                 child: const Text("Save"),
               ),
@@ -298,8 +328,12 @@ class _MapScreenState extends State<MapScreen> {
             .doc(user!.uid)
             .collection("regions")
             .add(data)
-            .timeout(const Duration(seconds: 5)); // timeout safety
+            .timeout(const Duration(seconds: 5));
         print("✅ Firestore write complete.");
+        setState(() {
+          polygonPointsList.add(List<LatLng>.from(currentPolygonPoints)); // ✅ fix here
+        });
+
       } catch (e, st) {
         print("❌ Error during Firestore write: $e");
         debugPrintStack(stackTrace: st);
@@ -326,9 +360,20 @@ class _MapScreenState extends State<MapScreen> {
       setState(() {
         currentPolygonPoints = [];
         isDrawing = false;
-        hasMore = true;
-        lastDocument = null;
-        documentIds.clear();
+        //hasMore = true;
+        //lastDocument = null;
+        //ocumentIds.clear();
+        //userProperties.clear();
+        //polygonPointsList.clear();
+        polygonPointsList.add(List<LatLng>.from(currentPolygonPoints));// ✅
+          polygons = polygonPointsList.map((points) {
+            return Polygon(
+              points: points,
+              color: Colors.green.withOpacity(0.3),
+              borderColor: Colors.green,
+              borderStrokeWidth: 2.0,
+            );
+          }).toList(); // ✅ update visual overlay
       });
 
       try {
@@ -370,40 +415,34 @@ class _MapScreenState extends State<MapScreen> {
     return (intersectCount % 2) == 1;
   }
 
-
   void showPropertyDetails(Map<String, dynamic> prop) {
     if (!mounted) return;
 
-    Future.microtask(() {
-      if (!mounted) return;
-
-      showDialog(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: Text(prop['title_number'] ?? 'Region'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text("Owner: ${prop['owner'] ?? ''}"),
-              Text("Wallet: ${prop['wallet_address'] ?? ''}"),
-              Text("Area: ${prop['area_sqkm']?.toStringAsFixed(2) ?? '--'} km²"),
-              Text("Description: ${prop['description'] ?? ''}"),
-              Text("Timestamp: ${prop['timestamp'] != null ? prop['timestamp'].toDate().toString() : 'Pending'}"),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(dialogContext).pop(); // Use local context here
-              },
-              child: const Text("Close"),
-            )
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(prop['title_number'] ?? 'Region'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text("Owner: ${prop['owner'] ?? ''}"),
+            Text("Wallet: ${prop['wallet_address'] ?? ''}"),
+            Text("Area: ${prop['area_sqkm']?.toStringAsFixed(2) ?? '--'} km²"),
+            Text("Description: ${prop['description'] ?? ''}"),
+            Text("Timestamp: ${prop['timestamp'] != null ? prop['timestamp'].toDate().toString() : 'Pending'}"),
           ],
         ),
-      );
-
-    });
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+            },
+            child: const Text("Close"),
+          )
+        ],
+      ),
+    );
   }
 
   @override
@@ -412,7 +451,6 @@ class _MapScreenState extends State<MapScreen> {
       return Scaffold(
         body: Stack(
           children: [
-            // 🗺️ Main Map Layer
             FlutterMap(
               mapController: mapController,
               options: MapOptions(
@@ -446,8 +484,11 @@ class _MapScreenState extends State<MapScreen> {
                   userAgentPackageName: 'com.example.landledger',
                   tileProvider: CancellableNetworkTileProvider(),
                 ),
+
+                // ✅ All visible polygons
                 PolygonLayer(
                   polygons: [
+                    // 🔹 Currently drawn shape
                     if (currentPolygonPoints.isNotEmpty)
                       Polygon(
                         points: currentPolygonPoints,
@@ -455,25 +496,28 @@ class _MapScreenState extends State<MapScreen> {
                         color: const Color.fromARGB(255, 46, 23, 173).withOpacity(0.5),
                         borderStrokeWidth: 2,
                       ),
-                    ...polygonPointsList.asMap().entries.map((entry) {
-                      final points = entry.value;
-                      return Polygon(
+
+                    // 🔸 All saved regions
+                    ...polygonPointsList.map(
+                      (points) => Polygon(
                         points: points,
                         color: const Color.fromARGB(255, 54, 244, 127).withOpacity(0.4),
                         borderColor: const Color.fromARGB(255, 2, 58, 23),
                         borderStrokeWidth: 2,
                         isFilled: true,
-                        label: "Property",
-                        labelStyle: const TextStyle(color: Colors.white, fontSize: 12),
-                      );
-                    }),
+                      ),
+                    ),
+
+                    // 🔹 Highlighted region if passed from widget
                     if (widget.highlightPolygon != null && widget.highlightPolygon!.isNotEmpty)
                       Polygon(
                         points: widget.highlightPolygon!,
-                        color: const Color.fromARGB(255, 54, 244, 127).withOpacity(0.4),
-                        borderColor: const Color.fromARGB(255, 2, 58, 23),
+                        color: const Color.fromARGB(255, 255, 215, 0).withOpacity(0.5),
+                        borderColor: Colors.orange,
                         borderStrokeWidth: 3,
                       ),
+
+                    // 🔹 Boundary regions
                     ...boundaryPolygons.map(
                       (polygon) => Polygon(
                         points: polygon,
@@ -487,27 +531,26 @@ class _MapScreenState extends State<MapScreen> {
               ],
             ),
 
-            // 📝 Floating Action Button to go backward
+
             Positioned(
               top: MediaQuery.of(context).padding.top + 8,
               left: 8,
               child: Material(
                 color: Colors.transparent,
                 child: IconButton(
-                  icon: Icon(Icons.arrow_back, color: const Color.fromARGB(255, 29, 29, 29)),
+                  icon: const Icon(Icons.arrow_back, color: Color.fromARGB(255, 29, 29, 29)),
                   onPressed: () => Navigator.of(context).pop(),
                 ),
               ),
             ),
-            // 🎛️ Zoom, Center, and Satellite Buttons (Satellite is 5th)
+            
             Positioned(
-              top: 100, // ⬅️ Adjusted from 40 to 100
+              top: 100,
               right: 16,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  // Zoom In 🔍
                   FloatingActionButton.small(
                     heroTag: "btn-zoom-in",
                     backgroundColor: Colors.black,
@@ -517,8 +560,6 @@ class _MapScreenState extends State<MapScreen> {
                     },
                   ),
                   const SizedBox(height: 12),
-
-                  // Zoom Out ➖
                   FloatingActionButton.small(
                     heroTag: "btn-zoom-out",
                     backgroundColor: Colors.black,
@@ -528,8 +569,6 @@ class _MapScreenState extends State<MapScreen> {
                     },
                   ),
                   const SizedBox(height: 12),
-
-                  // Center Region 🔲
                   FloatingActionButton.small(
                     heroTag: "btn-center",
                     backgroundColor: Colors.white,
@@ -545,8 +584,6 @@ class _MapScreenState extends State<MapScreen> {
                     },
                   ),
                   const SizedBox(height: 12),
-
-                  // Satellite Toggle 🛰️
                   FloatingActionButton.small(
                     heroTag: "btn-satellite-toggle",
                     backgroundColor: Colors.black,
@@ -563,8 +600,6 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ),
 
-
-            // ➕ Draw/Add Button
             Positioned(
               bottom: 20,
               right: 16,
@@ -580,6 +615,9 @@ class _MapScreenState extends State<MapScreen> {
                     savePolygon();
                   } else {
                     setState(() => isDrawing = !isDrawing);
+                    if (isDrawing) {
+                      currentPolygonPoints = []; // Clear previous points when starting new drawing
+                    }
                   }
                 },
               ),
@@ -600,7 +638,4 @@ class _MapScreenState extends State<MapScreen> {
       );
     }
   }
-
-
-
 }

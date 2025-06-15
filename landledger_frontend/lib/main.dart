@@ -52,27 +52,30 @@ class _LandLedgerAppState extends State<LandLedgerApp> {
 
       // Wrap your entire app in a real Overlay so Tooltip can work:
       builder: (context, child) {
-        return Overlay(
-          initialEntries: [
-            OverlayEntry(builder: (_) => child!),
-            OverlayEntry(builder: (_) {
-              return Positioned(
-                top: 16,
-                right: 16,
-                child: Tooltip(
-                  message: 'Toggle Theme',
-                  child: FloatingActionButton.small(
-                    backgroundColor: Theme.of(context).colorScheme.surface,
-                    onPressed: () => setState(() => isDarkMode = !isDarkMode),
-                    child: Icon(
-                      isDarkMode ? Icons.light_mode : Icons.dark_mode,
-                      size: 20,
+        return FocusTraversalGroup(
+          policy: WidgetOrderTraversalPolicy(), // prevents crash on focus sorting
+          child: Overlay(
+            initialEntries: [
+              OverlayEntry(builder: (_) => child!),
+              OverlayEntry(builder: (_) {
+                return Positioned(
+                  top: 16,
+                  right: 16,
+                  child: Tooltip(
+                    message: 'Toggle Theme',
+                    child: FloatingActionButton.small(
+                      backgroundColor: Theme.of(context).colorScheme.surface,
+                      onPressed: () => setState(() => isDarkMode = !isDarkMode),
+                      child: Icon(
+                        isDarkMode ? Icons.light_mode : Icons.dark_mode,
+                        size: 20,
+                      ),
                     ),
                   ),
-                ),
-              );
-            }),
-          ],
+                );
+              }),
+            ],
+          ),
         );
       },
 
