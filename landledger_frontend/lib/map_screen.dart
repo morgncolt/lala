@@ -16,7 +16,9 @@ class MapScreen extends StatefulWidget {
   final bool startDrawing;
   final List<LatLng>? highlightPolygon;
   final bool centerOnRegion; 
-  final void Function()? onForceStayInMapTab; 
+  final void Function()? onBackToHome;
+  final bool openedFromTab;
+ 
 
   const MapScreen({
     super.key,
@@ -24,9 +26,12 @@ class MapScreen extends StatefulWidget {
     required this.geojsonPath,
     this.startDrawing = false,
     this.highlightPolygon,
-    this.onForceStayInMapTab, // <-- And this
-    this.centerOnRegion = true, // 🆕 default to true
+    this.centerOnRegion = true,
+    this.onBackToHome,
+    this.openedFromTab = false, // ✅ default should be false (not true)
   });
+
+
 
   @override
   State<MapScreen> createState() => _MapScreenState();
@@ -539,7 +544,24 @@ class _MapScreenState extends State<MapScreen> {
                 color: Colors.transparent,
                 child: IconButton(
                   icon: const Icon(Icons.arrow_back, color: Color.fromARGB(255, 29, 29, 29)),
-                  onPressed: () => Navigator.of(context).pop(),
+                  onPressed: () {
+                    if (widget.openedFromTab) {
+                      // Came from Map tab → go to Home
+                      if (widget.onBackToHome != null) {
+                        debugPrint("🔙 Returning to Home tab from Map view.");
+                        widget.onBackToHome!();
+                      } else {
+                        debugPrint("⚠️ openedFromTab is true, but no onBackToHome defined.");
+                      }
+                    } else {
+                      // Came from properties list (or somewhere else) → just pop
+                      if (Navigator.canPop(context)) {
+                        Navigator.of(context).pop();
+                      } else {
+                        debugPrint("❗ Cannot pop — no history and not from tab.");
+                      }
+                    }
+                  },
                 ),
               ),
             ),

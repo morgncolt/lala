@@ -19,8 +19,6 @@ ThemeData buildDarkTheme() {
       bodyColor: Colors.white,
       displayColor: Colors.white,
     ),
-
-    // AppBar remains minimal on dark
     appBarTheme: const AppBarTheme(
       backgroundColor: Colors.transparent,
       elevation: 0,
@@ -32,8 +30,6 @@ ThemeData buildDarkTheme() {
       ),
       iconTheme: IconThemeData(color: Colors.white),
     ),
-
-    // Input fields styling
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: _fieldFill,
@@ -46,14 +42,9 @@ ThemeData buildDarkTheme() {
         borderRadius: BorderRadius.circular(12),
         borderSide: BorderSide(color: _brandGreen, width: 1.5),
       ),
-      contentPadding: const EdgeInsets.symmetric(
-        horizontal: 20,
-        vertical: 16,
-      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       labelStyle: TextStyle(color: Colors.grey[400]),
     ),
-
-    // Elevated button for 'Log in'
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: ElevatedButton.styleFrom(
         backgroundColor: _brandGreen,
@@ -68,16 +59,12 @@ ThemeData buildDarkTheme() {
         ),
       ),
     ),
-
-    // Text buttons (e.g., Forgot password)
     textButtonTheme: TextButtonThemeData(
       style: TextButton.styleFrom(
         foregroundColor: Colors.grey[400],
         textStyle: const TextStyle(fontSize: 14),
       ),
     ),
-
-    // Accent color for 'Sign up'
     colorScheme: base.colorScheme.copyWith(
       primary: _brandGreen,
       secondary: _accentGreen,
@@ -87,14 +74,10 @@ ThemeData buildDarkTheme() {
       onSecondary: Colors.white,
       onSurface: Colors.white,
     ),
-
-    // FloatingActionButton and other FABs
     floatingActionButtonTheme: const FloatingActionButtonThemeData(
       backgroundColor: _brandGreen,
       foregroundColor: Colors.white,
     ),
-
-    // Cards, if needed
     cardTheme: CardTheme(
       color: _fieldFill,
       shape: RoundedRectangleBorder(
@@ -102,7 +85,6 @@ ThemeData buildDarkTheme() {
       ),
       elevation: 2,
     ),
-
     dividerColor: Colors.grey[700],
   );
 }
@@ -114,7 +96,10 @@ ThemeData buildLightTheme() {
     scaffoldBackgroundColor: const Color(0xFFF6F9FC),
     primaryColor: Colors.blue,
     useMaterial3: true,
-    textTheme: GoogleFonts.robotoTextTheme(base.textTheme),
+    textTheme: GoogleFonts.robotoTextTheme(base.textTheme).apply(
+      bodyColor: Colors.black,
+      displayColor: Colors.black,
+    ),
     appBarTheme: const AppBarTheme(
       backgroundColor: Colors.white,
       elevation: 1,
@@ -137,10 +122,17 @@ ThemeData buildLightTheme() {
           borderRadius: BorderRadius.circular(8),
         ),
         padding: const EdgeInsets.symmetric(vertical: 14),
+        textStyle: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     ),
     textButtonTheme: TextButtonThemeData(
-      style: TextButton.styleFrom(foregroundColor: Colors.indigo),
+      style: TextButton.styleFrom(
+        foregroundColor: Colors.indigo,
+        textStyle: const TextStyle(fontSize: 14),
+      ),
     ),
     colorScheme: base.colorScheme.copyWith(
       primary: Colors.blue,

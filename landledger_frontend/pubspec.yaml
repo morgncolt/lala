@@ -29,6 +29,7 @@ dependencies:
   geolocator: ^11.0.0
   flutter_map_cancellable_tile_provider: ^1.0.0
 
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -50,4 +51,6 @@ flutter:
     - assets/data/nigeria_abj.geojson
     - assets/data/nigeria_lagos.geojson
     - assets/data/kenya.geojson
-    # - assets/maps/tiles.mbtiles   # Commented out for now
+    - assets/images/land_logo.png
+    - assets/images/land.png
+    

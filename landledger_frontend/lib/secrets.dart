@@ -1,0 +1,1 @@
+const String MAPBOX_TOKEN = 'pk.YOUR_PUBLIC_TOKEN';

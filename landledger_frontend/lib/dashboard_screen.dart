@@ -185,9 +185,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       color: Theme.of(context).primaryColor,
                       width: 40,
                       height: 40,
-                      child: const Icon(Icons.terrain, color: Colors.white),
+                      padding: const EdgeInsets.all(6), // Optional: to avoid edge clipping
+                      child: Image.asset(
+                        'assets/images/land.png', // <-- replace with actual path
+                        fit: BoxFit.contain,
+                      ),
                     ),
                   ),
+
                   const SizedBox(height: 12),
                   IconButton(
                     icon: Icon(
