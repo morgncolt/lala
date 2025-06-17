@@ -231,39 +231,46 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     final poly = _polygonPointsList[index];
     final isSatellite = _showSatelliteList[index];
     
-    return ClipRRect(
+  return ClipRRect(
       borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
       child: SizedBox(
         height: 160,
-        child: FlutterMap(
-          options: MapOptions(
-            center: poly[0],
-            zoom: 14,
-            interactiveFlags: InteractiveFlag.none,
-          ),
-          children: [
-            TileLayer(
-              urlTemplate: isSatellite
-                  // Satellite tiles when flag is true
-                  ? 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
-                  // OSM tiles when false
-                  : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-              subdomains: isSatellite ? [] : ['a', 'b', 'c'],
-              userAgentPackageName: 'com.example.landledger',
-              tileProvider: CancellableNetworkTileProvider(),
-            ),
-          
-            PolygonLayer(
-              polygons: [
-                Polygon(
-                  points: poly,
-                  borderColor: Colors.green.shade700,
-                  color: Colors.green.withOpacity(0.3),
-                  borderStrokeWidth: 2,
+        child: Builder(
+          builder: (context) {
+            // Dynamically compute the polygon's center
+            final polygonBounds = LatLngBounds.fromPoints(poly);
+            final polygonCenter = polygonBounds.center;
+
+            return FlutterMap(
+              options: MapOptions(
+                center: polygonCenter,
+                zoom: 16, // Slightly closer for better framing
+                interactiveFlags: InteractiveFlag.none, // Disable panning, zoom, tap
+              ),
+              children: [
+                TileLayer(
+                  urlTemplate: "https://api.mapbox.com/styles/v1/{id}/tiles/256/{z}/{x}/{y}@2x?access_token={accessToken}",
+                  additionalOptions: {
+                    'accessToken': 'pk.eyJ1IjoibW9yZ25jb2x0IiwiYSI6ImNtYng2eHI0ZjB3cjQybW9zNXZhaDJqanYifQ.0qZEU6MBjiTZiUDPs6JyoQ',
+                    'id': isSatellite
+                        ? 'mapbox/satellite-v9'
+                        : 'mapbox/outdoors-v12',
+                  },
+                  tileProvider: CancellableNetworkTileProvider(),
+                ),
+                PolygonLayer(
+                  polygons: [
+                    Polygon(
+                      points: poly,
+                      borderColor: Colors.green.shade700,
+                      color: Colors.green.withOpacity(0.3),
+                      borderStrokeWidth: 2,
+                    ),
+                  ],
                 ),
               ],
-            ),
-          ],
+            );
+          },
         ),
       ),
     );
@@ -272,90 +279,109 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
   Widget _buildPropertyCard(int index) {
     final prop = _userProperties[index];
     
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      elevation: 4,
-      color: Colors.grey[900],
-      child: Column(
-        children: [
-          _buildPropertyMap(index),
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.grey[850],
-              borderRadius: const BorderRadius.only(
-                bottomLeft: Radius.circular(12),
-                bottomRight: Radius.circular(12),
-              ),
-            ),
-            child: ListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              title: Text(
-                prop['title_number'] ?? 'Untitled Property',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                ),
-              ),
-              subtitle: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const SizedBox(height: 4),
-                  Text(
-                    'Owner: ${prop['owner'] ?? 'Unknown'}',
-                    style: const TextStyle(color: Colors.white70),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${(prop['description'] ?? '').toString()}',
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white70),
-                  ),
-                ],
-              ),
-              trailing: PopupMenuButton<String>(
-                icon: const Icon(Icons.more_vert, color: Colors.white),
-                onSelected: (value) {
-                  switch (value) {
-                    case 'satellite':
-                      setState(() => _showSatelliteList[index] = !_showSatelliteList[index]);
-                      break;
-                    case 'details':
-                      _showDetails(index);
-                      break;
-                    case 'delete':
-                      _deleteProperty(index);
-                      break;
-                  }
-                },
-                itemBuilder: (_) => [
-                  PopupMenuItem(
-                    value: 'satellite',
-                    child: Text(
-                      _showSatelliteList[index] ? 'Normal View' : 'Satellite View',
-                    ),
-                  ),
-                  const PopupMenuItem(
-                    value: 'details',
-                    child: Text('Details'),
-                  ),
-                  const PopupMenuItem(
-                    value: 'delete',
-                    child: Text(
-                      'Delete Property',
-                      style: TextStyle(color: Colors.red),
-                    ),
-                  ),
-                ],
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Card(
+          elevation: 2,
+          margin: EdgeInsets.zero,
+          color: Colors.grey[900],
+          child: Column(
+            children: [
+              // 🗺️ Compact map height
+              SizedBox(
+                height: 100,
+                child: _buildPropertyMap(index),
               ),
 
-            ),
+              // 📦 Condensed text content
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey[850],
+                  borderRadius: const BorderRadius.only(
+                    bottomLeft: Radius.circular(10),
+                    bottomRight: Radius.circular(10),
+                  ),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // 📋 Text block
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            prop['title_number'] ?? 'Untitled Property',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 14,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Owner: ${prop['owner'] ?? 'Unknown'}',
+                            style: const TextStyle(color: Colors.white70, fontSize: 12),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '${(prop['description'] ?? '').toString()}',
+                            style: const TextStyle(color: Colors.white60, fontSize: 12),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // ⋮ Menu
+                    PopupMenuButton<String>(
+                      icon: const Icon(Icons.more_vert, color: Colors.white),
+                      onSelected: (value) {
+                        switch (value) {
+                          case 'satellite':
+                            setState(() => _showSatelliteList[index] = !_showSatelliteList[index]);
+                            break;
+                          case 'details':
+                            _showDetails(index);
+                            break;
+                          case 'delete':
+                            _deleteProperty(index);
+                            break;
+                        }
+                      },
+                      itemBuilder: (_) => [
+                        PopupMenuItem(
+                          value: 'satellite',
+                          child: Text(
+                            _showSatelliteList[index] ? 'Normal View' : 'Satellite View',
+                          ),
+                        ),
+                        const PopupMenuItem(
+                          value: 'details',
+                          child: Text('Details'),
+                        ),
+                        const PopupMenuItem(
+                          value: 'delete',
+                          child: Text(
+                            'Delete Property',
+                            style: TextStyle(color: Colors.red),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
+
   }
   @override
   Widget build(BuildContext context) {

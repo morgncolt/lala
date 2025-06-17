@@ -57,23 +57,23 @@ class _LandLedgerAppState extends State<LandLedgerApp> {
           child: Overlay(
             initialEntries: [
               OverlayEntry(builder: (_) => child!),
-              OverlayEntry(builder: (_) {
-                return Positioned(
-                  top: 16,
-                  right: 16,
-                  child: Tooltip(
-                    message: 'Toggle Theme',
-                    child: FloatingActionButton.small(
-                      backgroundColor: Theme.of(context).colorScheme.surface,
-                      onPressed: () => setState(() => isDarkMode = !isDarkMode),
-                      child: Icon(
-                        isDarkMode ? Icons.light_mode : Icons.dark_mode,
-                        size: 20,
-                      ),
-                    ),
-                  ),
-                );
-              }),
+              // OverlayEntry(builder: (_) {
+              //   return Positioned(
+              //     top: 16,
+              //     right: 16,
+              //     child: Tooltip(
+              //       message: 'Toggle Theme',
+              //       child: FloatingActionButton.small(
+              //         backgroundColor: Theme.of(context).colorScheme.surface,
+              //         onPressed: () => setState(() => isDarkMode = !isDarkMode),
+              //         child: Icon(
+              //           isDarkMode ? Icons.light_mode : Icons.dark_mode,
+              //           size: 20,
+              //         ),
+              //       ),
+              //     ),
+              //   );
+              // }),
             ],
           ),
         );

@@ -18,6 +18,8 @@ class MapScreen extends StatefulWidget {
   final bool centerOnRegion; 
   final void Function()? onBackToHome;
   final bool openedFromTab;
+  
+
  
 
   const MapScreen({
@@ -47,6 +49,7 @@ class _MapScreenState extends State<MapScreen> {
   bool showSatellite = false;
   bool isLoading = false;
   bool hasMore = true;
+  bool show3D = false;
   DocumentSnapshot? lastDocument;
   List<LatLng> currentPolygonPoints = [];
   List<Map<String, dynamic>> userProperties = [];
@@ -55,6 +58,17 @@ class _MapScreenState extends State<MapScreen> {
   Timer? _debounce;
   List<List<LatLng>> boundaryPolygons = [];
   List<Polygon> polygons = [];
+
+    String get _mapboxStyleId {
+    if (showSatellite) {
+      return 'mapbox/satellite-streets-v12';
+    } else if (show3D) {
+      return 'morgancolt/clxyz3dstyle';  // ✅ Correct usage for Mapbox in flutter_map
+    }else {
+      return 'mapbox/outdoors-v12'; // Better for overlays than 'streets-v12'
+    }
+  }
+
 
 
   @override
@@ -481,15 +495,23 @@ class _MapScreenState extends State<MapScreen> {
                 },
               ),
               children: [
+                // TileLayer(
+                //   urlTemplate: showSatellite
+                //       ? 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                //       : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                //   subdomains: showSatellite ? [] : ['a', 'b', 'c'],
+                //   userAgentPackageName: 'com.example.landledger',
+                //   tileProvider: CancellableNetworkTileProvider(),
+                // ),
+
                 TileLayer(
-                  urlTemplate: showSatellite
-                      ? 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
-                      : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                  subdomains: showSatellite ? [] : ['a', 'b', 'c'],
-                  userAgentPackageName: 'com.example.landledger',
+                  urlTemplate: "https://api.mapbox.com/styles/v1/{id}/tiles/256/{z}/{x}/{y}@2x?access_token={accessToken}",
+                  additionalOptions: {
+                    'accessToken': 'pk.eyJ1IjoibW9yZ25jb2x0IiwiYSI6ImNtYng2eHI0ZjB3cjQybW9zNXZhaDJqanYifQ.0qZEU6MBjiTZiUDPs6JyoQ',
+                    'id': _mapboxStyleId, // This will now return 'morgancolt/clxyz3dstyle' correctly
+                  },
                   tileProvider: CancellableNetworkTileProvider(),
                 ),
-
                 // ✅ All visible polygons
                 PolygonLayer(
                   polygons: [
@@ -517,9 +539,9 @@ class _MapScreenState extends State<MapScreen> {
                     if (widget.highlightPolygon != null && widget.highlightPolygon!.isNotEmpty)
                       Polygon(
                         points: widget.highlightPolygon!,
-                        color: const Color.fromARGB(255, 255, 215, 0).withOpacity(0.5),
-                        borderColor: Colors.orange,
-                        borderStrokeWidth: 3,
+                        color: const Color.fromARGB(255, 32, 131, 61).withOpacity(0.5),
+                        borderColor: const Color.fromARGB(255, 32, 131, 61),
+                        borderStrokeWidth: 4,
                       ),
 
                     // 🔹 Boundary regions
@@ -610,13 +632,28 @@ class _MapScreenState extends State<MapScreen> {
                     heroTag: "btn-satellite-toggle",
                     backgroundColor: Colors.black,
                     child: Icon(
-                      showSatellite ? Icons.satellite_alt : Icons.map,
+                      showSatellite
+                          ? Icons.satellite_alt
+                          : show3D
+                              ? Icons.apartment // or Icons.grid_3x3, Icons.layers
+                              : Icons.map,
                       color: Colors.white,
                     ),
+
                     tooltip: "Toggle Satellite",
                     onPressed: () {
-                      setState(() => showSatellite = !showSatellite);
-                    },
+                      setState(() {
+                        if (showSatellite) {
+                          showSatellite = false;
+                          show3D = true;
+                        } else if (show3D) {
+                          show3D = false;
+                        } else {
+                          showSatellite = true;
+                        }
+                      });
+                    }
+
                   ),
                 ],
               ),

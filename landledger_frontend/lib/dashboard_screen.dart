@@ -9,7 +9,6 @@ import 'package:landledger_frontend/landledger_screen.dart';
 import 'package:landledger_frontend/cif_screen.dart';
 import 'package:landledger_frontend/settings_screen.dart';
 
-// Simple model for navigation entries
 class _NavEntry {
   final IconData icon;
   final String label;
@@ -22,24 +21,33 @@ class DashboardScreen extends StatefulWidget {
   final String regionKey;
   final String geojsonPath;
   final int initialTabIndex;
+  final void Function(String regionKey, String geojsonPath)? onRegionSelected;
 
   const DashboardScreen({
     Key? key,
     required this.regionKey,
     required this.geojsonPath,
     this.initialTabIndex = 0,
+    this.onRegionSelected,
   }) : super(key: key);
 
   @override
   _DashboardScreenState createState() => _DashboardScreenState();
 }
 
+
 class _DashboardScreenState extends State<DashboardScreen> {
-  // Tracks which tab is selected
   int _selectedIndex = 0;
   bool _isRailExtended = false;
   bool _showMoreMenu = false;
-  bool _isDarkMode = true;
+  String? _selectedRegionKey;
+  String? _geojsonPath;
+
+  void _goToHomeTab() {
+    setState(() {
+      _selectedIndex = 0;
+    });
+  }
 
   @override
   void initState() {
@@ -53,50 +61,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  @override
+  void _onRegionSelected(String regionKey, String geojsonPath) {
+    setState(() {
+      _selectedRegionKey = regionKey;
+      _geojsonPath = geojsonPath;
+      _selectedIndex  = 0; // 👈 Go to "My Properties" tab
+    });
+  }
+
+
+ @override
   Widget build(BuildContext context) {
-    // Primary tabs: Home, My Properties, Map
     final primaryNavEntries = <_NavEntry>[
       _NavEntry(
         icon: Icons.home,
         label: 'Home',
         screen: HomeScreen(
-          currentRegionKey: null, // 👈 this prevents the loop
-          initialSelectedKey: widget.regionKey, // ✅ pass last selected region
-          onRegionSelected: (key, path) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (!mounted) return;
-              print('🌍 Navigating to region: $key with $path');
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => DashboardScreen(
-                    regionKey: key,
-                    geojsonPath: path,
-                    initialTabIndex: 0,
-                  ),
-                ),
-              );
-            });
-          },
+          onRegionSelected: _onRegionSelected,
+          currentRegionKey: _selectedRegionKey,
+          initialSelectedKey: _selectedRegionKey ?? widget.regionKey,
         ),
-
       ),
       _NavEntry(
         icon: Icons.list,
         label: 'My Properties',
         screen: MyPropertiesScreen(
-          regionKey: widget.regionKey,
-          geojsonPath: widget.geojsonPath,
+          regionKey: _selectedRegionKey ?? widget.regionKey,
+          geojsonPath: _geojsonPath ?? widget.geojsonPath,
         ),
       ),
       _NavEntry(
         icon: Icons.map,
         label: 'Map View',
         screen: MapScreen(
-          regionKey: widget.regionKey,
-          geojsonPath: widget.geojsonPath,
-          centerOnRegion: true,
+          regionKey: _selectedRegionKey ?? widget.regionKey,
+          geojsonPath: _geojsonPath ?? widget.geojsonPath,
+          openedFromTab: true,
+          onBackToHome: _goToHomeTab,
         ),
       ),
     ];
