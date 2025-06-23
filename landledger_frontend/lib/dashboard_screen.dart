@@ -9,223 +9,443 @@ import 'package:landledger_frontend/landledger_screen.dart';
 import 'package:landledger_frontend/cif_screen.dart';
 import 'package:landledger_frontend/settings_screen.dart';
 
-class _NavEntry {
-  final IconData icon;
-  final String label;
-  final Widget screen;
-
-  const _NavEntry({required this.icon, required this.label, required this.screen});
-}
-
 class DashboardScreen extends StatefulWidget {
-  final String regionKey;
+  final String regionId;
   final String geojsonPath;
   final int initialTabIndex;
-  final void Function(String regionKey, String geojsonPath)? onRegionSelected;
+  final void Function(String regionId, String geojsonPath)? onRegionSelected;
 
   const DashboardScreen({
     Key? key,
-    required this.regionKey,
+    required this.regionId,
     required this.geojsonPath,
     this.initialTabIndex = 0,
     this.onRegionSelected,
   }) : super(key: key);
 
   @override
-  _DashboardScreenState createState() => _DashboardScreenState();
+  State<DashboardScreen> createState() => _DashboardScreenState();
 }
-
 
 class _DashboardScreenState extends State<DashboardScreen> {
   int _selectedIndex = 0;
-  bool _isRailExtended = false;
-  bool _showMoreMenu = false;
-  String? _selectedRegionKey;
+  String? _selectedRegionId;
   String? _geojsonPath;
-
-  void _goToHomeTab() {
-    setState(() {
-      _selectedIndex = 0;
-    });
-  }
+  bool _isDrawerOpen = false;
+  late final List<NavigationItem> _navigationItems;
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   @override
   void initState() {
     super.initState();
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      setState(() {
-        _selectedIndex = widget.initialTabIndex.clamp(0, 2);
-      });
-    });
+    _navigationItems = _buildNavigationItems();
+    _selectedIndex = widget.initialTabIndex.clamp(0, _navigationItems.length - 1);
+    _selectedRegionId = widget.regionId;
+    _geojsonPath = widget.geojsonPath;
   }
 
-  void _onRegionSelected(String regionKey, String geojsonPath) {
+  void _openMyPropertiesWithBackToHome() {
     setState(() {
-      _selectedRegionKey = regionKey;
-      _geojsonPath = geojsonPath;
-      _selectedIndex  = 0; // 👈 Go to "My Properties" tab
+      _selectedIndex = 1; // Switch to My Properties tab
+      _selectedRegionId = widget.regionId; // Ensure region is set
+      _geojsonPath = widget.geojsonPath; // Ensure geojson path is set
+    });
+  }
+  void _openMapWithBackToHome() {
+    setState(() {
+      _selectedIndex = 2; // Switch to Map tab
+      _selectedRegionId = widget.regionId; // Ensure region is set
+      _geojsonPath = widget.geojsonPath; // Ensure geojson path is set
+    });
+  }
+  void _openCifWithBackToHome() {
+    setState(() {
+      _selectedIndex = 4; // Switch to CIF tab
+    });
+  }
+  void _openLandLedgerWithBackToHome() {
+    setState(() {
+      _selectedIndex = 3; // Switch to LandLedger tab
     });
   }
 
-
- @override
-  Widget build(BuildContext context) {
-    final primaryNavEntries = <_NavEntry>[
-      _NavEntry(
-        icon: Icons.home,
+  List<NavigationItem> _buildNavigationItems() {
+    return [
+      NavigationItem(
+        icon: Icons.home_outlined,
+        activeIcon: Icons.home_filled,
         label: 'Home',
-        screen: HomeScreen(
+        builder: (context, regionId, geojsonPath) {
+          print("🏠 Building HomeScreen with $regionId, $geojsonPath");
+          return HomeScreen(
+            key: const ValueKey('home_screen'),
+            currentRegionId: regionId ?? widget.regionId,
+            initialSelectedId: regionId ?? widget.regionId,
+            onRegionSelected: _onRegionSelected,
+            onGoToMap: _openMapWithBackToHome,
+          );
+        },
+
+      ),
+      NavigationItem(
+        icon: Icons.list_alt_outlined,
+        activeIcon: Icons.list_alt,
+        label: 'Properties',
+        builder: (context, regionId, geojsonPath) => MyPropertiesScreen(
+          regionId: regionId ?? widget.regionId,
+          geojsonPath: geojsonPath ?? widget.geojsonPath,
           onRegionSelected: _onRegionSelected,
-          currentRegionKey: _selectedRegionKey,
-          initialSelectedKey: _selectedRegionKey ?? widget.regionKey,
         ),
       ),
-      _NavEntry(
-        icon: Icons.list,
-        label: 'My Properties',
-        screen: MyPropertiesScreen(
-          regionKey: _selectedRegionKey ?? widget.regionKey,
-          geojsonPath: _geojsonPath ?? widget.geojsonPath,
-        ),
-      ),
-      _NavEntry(
-        icon: Icons.map,
-        label: 'Map View',
-        screen: MapScreen(
-          regionKey: _selectedRegionKey ?? widget.regionKey,
-          geojsonPath: _geojsonPath ?? widget.geojsonPath,
+      NavigationItem(
+        icon: Icons.map_outlined,
+        activeIcon: Icons.map,
+        label: 'Map',
+        builder: (context, regionId, geojsonPath) => MapScreen(
+          regionId: regionId ?? widget.regionId,
+          geojsonPath: geojsonPath ?? widget.geojsonPath,
           openedFromTab: true,
-          onBackToHome: _goToHomeTab,
+          onRegionSelected: _onRegionSelected,
+          onOpenMyProperties: _openMyPropertiesWithBackToHome,
         ),
       ),
-    ];
-
-    // Secondary tabs under "More"
-    final secondaryNavEntries = <_NavEntry>[
-      const _NavEntry(
-        icon: Icons.bar_chart,
+      NavigationItem(
+        icon: Icons.analytics_outlined,
+        activeIcon: Icons.analytics,
         label: 'LandLedger',
-        screen: Center(child: Text('LandLedger 🔜')),
+        builder: (context, _, __) => const LandledgerScreen(),
+        onTap: _openLandLedgerWithBackToHome,
       ),
-      const _NavEntry(
-        icon: Icons.assessment,
+      NavigationItem(
+        icon: Icons.assessment_outlined,
+        activeIcon: Icons.assessment,
         label: 'CIF',
-        screen: Center(child: Text('CIF 🔜')),
+        builder: (context, _, __) => const CifScreen(),
+        onTap: _openCifWithBackToHome,
       ),
-      const _NavEntry(
-        icon: Icons.settings,
+    ];
+  }
+
+  void _onRegionSelected(String regionId, String geojsonPath) {
+    setState(() {
+      _selectedRegionId = regionId;
+      _geojsonPath = geojsonPath;
+    });
+    widget.onRegionSelected?.call(regionId, geojsonPath);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isLargeScreen = MediaQuery.of(context).size.width > 800;
+    final allDestinations = [
+      ..._navigationItems,
+      NavigationItem(
+        icon: Icons.settings_outlined,
+        activeIcon: Icons.settings,
         label: 'Settings',
-        screen: Center(child: Text('Settings 🔜')),
+        builder: (_, __, ___) => const SettingsScreen(),
+      ),
+      NavigationItem(
+        icon: Icons.logout,
+        activeIcon: Icons.logout,
+        label: 'Logout',
+        builder: (_, __, ___) => Container(),
       ),
     ];
-
-    // Build rail destinations dynamically
-    final destinations = <NavigationRailDestination>[
-      ...primaryNavEntries.map(
-        (e) => NavigationRailDestination(
-          icon: Icon(e.icon),
-          label: Text(e.label),
-        ),
-      ),
-      NavigationRailDestination(
-        icon: Icon(_showMoreMenu ? Icons.expand_less : Icons.more_horiz),
-        label: const Text('More'),
-      ),
-      if (_showMoreMenu)
-        ...secondaryNavEntries.map(
-          (e) => NavigationRailDestination(
-            icon: Icon(e.icon),
-            label: Text(e.label),
-          ),
-        ),
-    ];
-
-    // Clamp selected index
-    final safeIndex = _selectedIndex < destinations.length ? _selectedIndex : 0;
 
     return Scaffold(
+      key: _scaffoldKey,
+      appBar: isLargeScreen
+          ? null
+          : AppBar(
+              title: Text(_navigationItems[_selectedIndex].label),
+              centerTitle: true,
+              leading: IconButton(
+                icon: const Icon(Icons.menu),
+                onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+              ),
+            ),
+      drawer: isLargeScreen ? null : _buildMobileDrawer(theme),
       body: Row(
         children: [
-          Theme(
-            data: Theme.of(context).copyWith(
-              navigationRailTheme: NavigationRailThemeData(
-                backgroundColor: Colors.white,
-                elevation: 4,
-                indicatorColor: Theme.of(context).primaryColor.withOpacity(0.15),
-                indicatorShape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                selectedIconTheme: IconThemeData(color: Theme.of(context).primaryColor, size: 28),
-                unselectedIconTheme: IconThemeData(color: Colors.grey.shade600, size: 24),
-                selectedLabelTextStyle: TextStyle(color: Theme.of(context).primaryColor, fontWeight: FontWeight.w600),
-                unselectedLabelTextStyle: TextStyle(color: Colors.grey.shade600),
-              ),
-            ),
-            child: NavigationRail(
-              extended: _isRailExtended,
-              minWidth: 56,
-              minExtendedWidth: 120,
-              labelType: NavigationRailLabelType.none,
-              selectedIndex: safeIndex,
-              onDestinationSelected: (i) {
-                if (i == primaryNavEntries.length) {
-                  setState(() => _showMoreMenu = !_showMoreMenu);
-                } else {
-                  setState(() {
-                    _selectedIndex = i;
-                    _showMoreMenu = false;
-                  });
-                }
-              },
-              leading: Column(
-                children: [
-                  const SizedBox(height: 16),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Container(
-                      color: Theme.of(context).primaryColor,
-                      width: 40,
-                      height: 40,
-                      padding: const EdgeInsets.all(6), // Optional: to avoid edge clipping
-                      child: Image.asset(
-                        'assets/images/land.png', // <-- replace with actual path
-                        fit: BoxFit.contain,
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 12),
-                  IconButton(
-                    icon: Icon(
-                      _isRailExtended ? Icons.chevron_left : Icons.chevron_right,
-                      color: Colors.grey.shade600,
-                    ),
-                    onPressed: () => setState(() => _isRailExtended = !_isRailExtended),
-                  ),
-                ],
-              ),
-              destinations: destinations,
-              trailing: Padding(
-                padding: const EdgeInsets.only(bottom: 24),
-                child: IconButton(
-                  icon: const Icon(Icons.logout),
-                  onPressed: () {
-                    FirebaseAuth.instance.signOut();
-                    Navigator.pushReplacementNamed(context, '/login');
-                  },
-                ),
-              ),
+          if (isLargeScreen) _buildDesktopSidebar(theme),
+          Expanded(
+            child: _navigationItems[_selectedIndex].builder(
+              context,
+              _selectedRegionId ?? widget.regionId,
+              _geojsonPath ?? widget.geojsonPath,
             ),
           ),
-          const VerticalDivider(thickness: 1, width: 1),
+          
+        ],
+      ),
+      // floatingActionButton: _selectedIndex == 2
+      //     ? FloatingActionButton(
+      //         child: const Icon(Icons.my_location),
+      //         onPressed: () {
+      //           // Handle map location action
+      //         },
+      //       )
+      //     : null,
+    );
+  }
+
+  Widget _buildDesktopSidebar(ThemeData theme) {
+    return Container(
+      width: 250,
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        border: Border(
+          right: BorderSide(
+            color: theme.dividerColor,
+            width: 1,
+          ),
+        ),
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 20),
+          _buildLogoHeader(theme),
+          const SizedBox(height: 20),
           Expanded(
-            child: safeIndex < primaryNavEntries.length
-                ? primaryNavEntries[safeIndex].screen
-                : secondaryNavEntries[safeIndex - primaryNavEntries.length - 1].screen,
+            child: ListView.builder(
+              itemCount: _navigationItems.length,
+              itemBuilder: (context, index) {
+                final item = _navigationItems[index];
+                return _buildSidebarItem(theme, item, index);
+              },
+            ),
+          ),
+          const Divider(),
+          _buildSidebarItem(
+            theme,
+            NavigationItem(
+              icon: Icons.settings_outlined,
+              activeIcon: Icons.settings,
+              label: 'Settings',
+              builder: (_, __, ___) => const SettingsScreen(),
+            ),
+            _navigationItems.length,
+          ),
+          _buildSidebarItem(
+            theme,
+            NavigationItem(
+              icon: Icons.logout,
+              activeIcon: Icons.logout,
+              label: 'Logout',
+              builder: (_, __, ___) => Container(),
+            ),
+            _navigationItems.length + 1,
+          ),
+          const SizedBox(height: 20),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMobileDrawer(ThemeData theme) {
+    return Drawer(
+      child: Column(
+        children: [
+          _buildDrawerHeader(theme),
+          Expanded(
+            child: ListView.builder(
+              itemCount: _navigationItems.length,
+              itemBuilder: (context, index) {
+                final item = _navigationItems[index];
+                return _buildDrawerItem(theme, item, index);
+              },
+            ),
+          ),
+          const Divider(),
+          _buildDrawerItem(
+            theme,
+            NavigationItem(
+              icon: Icons.settings_outlined,
+              activeIcon: Icons.settings,
+              label: 'Settings',
+              builder: (_, __, ___) => const SettingsScreen(),
+            ),
+            _navigationItems.length,
+          ),
+          _buildDrawerItem(
+            theme,
+            NavigationItem(
+              icon: Icons.logout,
+              activeIcon: Icons.logout,
+              label: 'Logout',
+              builder: (_, __, ___) => Container(),
+            ),
+            _navigationItems.length + 1,
           ),
         ],
       ),
-    
     );
   }
+
+  Widget _buildDrawerHeader(ThemeData theme) {
+    return DrawerHeader(
+      decoration: BoxDecoration(
+        color: theme.primaryColor.withOpacity(0.1),
+      ),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: Container(
+                color: theme.primaryColor,
+                width: 48,
+                height: 48,
+                padding: const EdgeInsets.all(8),
+                child: Image.asset(
+                  'assets/images/land.png',
+                  fit: BoxFit.contain,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'LandLedger',
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLogoHeader(ThemeData theme) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.start,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              color: theme.primaryColor,
+              width: 40,
+              height: 40,
+              padding: const EdgeInsets.all(6),
+              child: Image.asset(
+                'assets/images/land.png',
+                fit: BoxFit.contain,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            'LandLedger',
+            style: theme.textTheme.titleLarge?.copyWith(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSidebarItem(ThemeData theme, NavigationItem item, int index) {
+    final isSelected = _selectedIndex == index;
+    final isSettings = index == _navigationItems.length;
+    final isLogout = index == _navigationItems.length + 1;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      decoration: BoxDecoration(
+        color: isSelected ? theme.primaryColor.withOpacity(0.1) : Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: ListTile(
+        leading: Icon(
+          isSelected ? item.activeIcon : item.icon,
+          color: isSelected ? theme.primaryColor : theme.iconTheme.color,
+        ),
+        title: Text(
+          item.label,
+          style: TextStyle(
+            color: isSelected ? theme.primaryColor : theme.textTheme.bodyLarge?.color,
+            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+        onTap: () {
+          if (isSettings) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+            );
+          } else if (isLogout) {
+            FirebaseAuth.instance.signOut();
+            Navigator.pushReplacementNamed(context, '/login');
+          } else {
+            if (item.onTap != null) {
+              item.onTap!();
+            } else {
+              setState(() => _selectedIndex = index);
+            }
+          }
+        },
+          selected: isSelected,
+          selectedTileColor: theme.primaryColor.withOpacity(0.1),
+
+      ),
+    );
+  }
+
+  Widget _buildDrawerItem(ThemeData theme, NavigationItem item, int index) {
+  final isSelected = _selectedIndex == index;
+  final isSettings = index == _navigationItems.length;
+  final isLogout = index == _navigationItems.length + 1;
+
+  return ListTile(
+    leading: Icon(
+      isSelected ? item.activeIcon : item.icon,
+      color: isSelected ? theme.primaryColor : theme.iconTheme.color,
+    ),
+    title: Text(item.label),
+    selected: isSelected,
+    selectedTileColor: theme.primaryColor.withOpacity(0.1),
+    onTap: () {
+      Navigator.pop(context);
+      if (isSettings) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const SettingsScreen()),
+        );
+      } else if (isLogout) {
+        FirebaseAuth.instance.signOut();
+        Navigator.pushReplacementNamed(context, '/login');
+      } else {
+        if (item.onTap != null) {
+          item.onTap!();
+        } else {
+          setState(() => _selectedIndex = index);
+        }
+      }
+    },
+
+  );
+  }
+}
+
+
+class NavigationItem {
+  final IconData icon;
+  final IconData activeIcon;
+  final String label;
+  final Widget Function(BuildContext, String?, String?) builder;
+  final VoidCallback? onTap; // ✅ Add this
+
+  const NavigationItem({
+    required this.icon,
+    required this.activeIcon,
+    required this.label,
+    required this.builder,
+    this.onTap,
+  });
 }

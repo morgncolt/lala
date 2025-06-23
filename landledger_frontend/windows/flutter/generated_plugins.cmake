@@ -5,9 +5,12 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   cloud_firestore
   desktop_webview_auth
+  file_selector_windows
   firebase_auth
   firebase_core
+  firebase_storage
   geolocator_windows
+  share_plus
   sqlite3_flutter_libs
   url_launcher_windows
 )

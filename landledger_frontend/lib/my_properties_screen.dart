@@ -5,35 +5,49 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_cancellable_tile_provider/flutter_map_cancellable_tile_provider.dart';
+import 'package:intl/intl.dart';
 import 'map_screen.dart';
 
 class MyPropertiesScreen extends StatefulWidget {
-  final String regionKey;
-  final String geojsonPath;
+  final String regionId;
+  final String? geojsonPath;
   final List<LatLng>? highlightPolygon;
+  final VoidCallback? onBackToHome;
+  final void Function(String regionId, String geojsonPath)? onRegionSelected;
 
   const MyPropertiesScreen({
     Key? key,
-    required this.regionKey,
-    required this.geojsonPath,
+    required this.regionId,
+    this.geojsonPath,
     this.highlightPolygon,
+    this.onBackToHome,
+    this.onRegionSelected,
   }) : super(key: key);
 
   @override
   State<MyPropertiesScreen> createState() => _MyPropertiesScreenState();
 }
 
+
 class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
   final List<Map<String, dynamic>> _userProperties = [];
   final List<List<LatLng>> _polygonPointsList = [];
   final List<String> _documentIds = [];
-  final List<bool> _showSatelliteList = [];
   bool _isLoading = false;
   bool _hasMore = true;
   DocumentSnapshot? _lastDocument;
   final ScrollController _scrollController = ScrollController();
   final User? _user = FirebaseAuth.instance.currentUser;
   Timer? _debounce;
+  List<LatLng>? _selectedPolygon;
+  bool _showPolygonInfo = false;
+  DocumentSnapshot? _selectedPolygonDoc;
+  final Map<int, bool> _satelliteViewMap = {};
+  final Map<int, double> _zoomLevelMap = {};
+  final Map<int, LatLng?> _centerMap = {};
+  final Map<int, MapController> _mapControllers = {};
+  String _searchQuery = '';
+  Timer? _searchDebounce;
 
   @override
   void initState() {
@@ -46,6 +60,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
   void dispose() {
     _scrollController.dispose();
     _debounce?.cancel();
+    _searchDebounce?.cancel();
     super.dispose();
   }
 
@@ -59,6 +74,15 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     });
   }
 
+  List<Map<String, dynamic>> get _filteredProperties {
+    if (_searchQuery.isEmpty) return _userProperties;
+    return _userProperties.where((prop) {
+      return (prop['title_number']?.toString().toLowerCase().contains(_searchQuery) ?? false) ||
+          (prop['description']?.toString().toLowerCase().contains(_searchQuery) ?? false) ||
+          (prop['wallet_address']?.toString().toLowerCase().contains(_searchQuery) ?? false);
+    }).toList();
+  }
+
   Future<void> _fetchProperties() async {
     if (_user == null || _isLoading || !_hasMore) return;
     
@@ -69,8 +93,8 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
           .collection('users')
           .doc(_user!.uid)
           .collection('regions')
-          .where('region', isEqualTo: widget.regionKey)
-          .orderBy('title_number')
+          .where('region', isEqualTo: widget.regionId)
+          .orderBy('timestamp', descending: true)
           .limit(10);
 
       if (_lastDocument != null) {
@@ -97,13 +121,19 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
           props.add(data);
           polys.add(coords);
           ids.add(doc.id);
+          
+          // Initialize view settings for each property
+          final index = _userProperties.length + props.length - 1;
+          _mapControllers[index] = MapController();
+          _satelliteViewMap[index] = false;
+          _zoomLevelMap[index] = 15.0;
+          _centerMap[index] = null;
         }
 
         setState(() {
           _userProperties.addAll(props);
           _polygonPointsList.addAll(polys);
           _documentIds.addAll(ids);
-          _showSatelliteList.addAll(List.filled(props.length, false));
           _lastDocument = snapshot.docs.last;
         });
       } else {
@@ -119,6 +149,26 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  void _handlePolygonTap(int index) {
+    setState(() {
+      _selectedPolygon = _polygonPointsList[index];
+      _selectedPolygonDoc = _userProperties[index] as DocumentSnapshot?;
+      _showPolygonInfo = true;
+    });
+  }
+
+  void _handleMapTap(int index, LatLng point) {
+    setState(() {
+      if (_centerMap[index] == null) {
+        _centerMap[index] = point;
+        _zoomLevelMap[index] = 18.0;
+      } else {
+        _centerMap[index] = null;
+        _zoomLevelMap[index] = 15.0;
+      }
+    });
   }
 
   Future<void> _deleteProperty(int index) async {
@@ -159,7 +209,9 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
         _userProperties.removeAt(index);
         _polygonPointsList.removeAt(index);
         _documentIds.removeAt(index);
-        _showSatelliteList.removeAt(index);
+        _satelliteViewMap.remove(index);
+        _zoomLevelMap.remove(index);
+        _centerMap.remove(index);
       });
 
       if (mounted) {
@@ -177,267 +229,528 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     }
   }
 
-  void _showDetails(int index) {
-    final prop = _userProperties[index];
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(prop['title_number'] ?? 'Property Details'),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _buildDetailItem('Owner', prop['owner']),
-              _buildDetailItem('Wallet', prop['wallet_address']),
-              _buildDetailItem('Area', '${prop['area_sqkm']?.toStringAsFixed(2) ?? 'N/A'} km²'),
-              _buildDetailItem('Description', prop['description']),
-              _buildDetailItem(
-                'Created',
-                prop['timestamp']?.toDate().toString() ?? 'Unknown',
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDetailItem(String label, String? value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4.0),
-      child: RichText(
-        text: TextSpan(
-          style: DefaultTextStyle.of(context).style,
-          children: [
-            TextSpan(
-              text: '$label: ',
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            TextSpan(text: value ?? 'N/A'),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPropertyMap(int index) {
-    final poly = _polygonPointsList[index];
-    final isSatellite = _showSatelliteList[index];
-    
-  return ClipRRect(
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-      child: SizedBox(
-        height: 160,
-        child: Builder(
-          builder: (context) {
-            // Dynamically compute the polygon's center
-            final polygonBounds = LatLngBounds.fromPoints(poly);
-            final polygonCenter = polygonBounds.center;
-
-            return FlutterMap(
-              options: MapOptions(
-                center: polygonCenter,
-                zoom: 16, // Slightly closer for better framing
-                interactiveFlags: InteractiveFlag.none, // Disable panning, zoom, tap
-              ),
-              children: [
-                TileLayer(
-                  urlTemplate: "https://api.mapbox.com/styles/v1/{id}/tiles/256/{z}/{x}/{y}@2x?access_token={accessToken}",
-                  additionalOptions: {
-                    'accessToken': 'pk.eyJ1IjoibW9yZ25jb2x0IiwiYSI6ImNtYng2eHI0ZjB3cjQybW9zNXZhaDJqanYifQ.0qZEU6MBjiTZiUDPs6JyoQ',
-                    'id': isSatellite
-                        ? 'mapbox/satellite-v9'
-                        : 'mapbox/outdoors-v12',
-                  },
-                  tileProvider: CancellableNetworkTileProvider(),
-                ),
-                PolygonLayer(
-                  polygons: [
-                    Polygon(
-                      points: poly,
-                      borderColor: Colors.green.shade700,
-                      color: Colors.green.withOpacity(0.3),
-                      borderStrokeWidth: 2,
-                    ),
-                  ],
-                ),
-              ],
-            );
-          },
-        ),
-      ),
-    );
-  }
-
   Widget _buildPropertyCard(int index) {
     final prop = _userProperties[index];
+    final poly = _polygonPointsList[index];
+    final isSelected = _selectedPolygon == poly;
+    final isSatellite = _satelliteViewMap[index] ?? false;
+    final zoomLevel = _zoomLevelMap[index] ?? 15.0;
+    final center = _centerMap[index] ?? LatLngBounds.fromPoints(poly).center;
     
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(10),
-        child: Card(
-          elevation: 2,
-          margin: EdgeInsets.zero,
-          color: Colors.grey[900],
-          child: Column(
-            children: [
-              // 🗺️ Compact map height
-              SizedBox(
-                height: 100,
-                child: _buildPropertyMap(index),
-              ),
 
-              // 📦 Condensed text content
-              Container(
-                decoration: BoxDecoration(
-                  color: Colors.grey[850],
-                  borderRadius: const BorderRadius.only(
-                    bottomLeft: Radius.circular(10),
-                    bottomRight: Radius.circular(10),
-                  ),
-                ),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // 📋 Text block
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+    return GestureDetector(
+      onTap: () => _handlePolygonTap(index),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          children: [
+            ClipRRect(
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+              child: Stack(
+                children: [
+                  SizedBox(
+                    height: 180,
+                    child: GestureDetector(
+                      onTap: () => _handleMapTap(index, center),
+                      child: FlutterMap(
+                        mapController: _mapControllers[index],
+                        options: MapOptions(
+                          center: center,
+                          zoom: zoomLevel,
+                          interactiveFlags: InteractiveFlag.none,
+                        ),
                         children: [
-                          Text(
-                            prop['title_number'] ?? 'Untitled Property',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 14,
+                          TileLayer(
+                            urlTemplate: "https://api.mapbox.com/styles/v1/{id}/tiles/256/{z}/{x}/{y}@2x?access_token={accessToken}",
+                            additionalOptions: {
+                              'accessToken': 'pk.eyJ1IjoibW9yZ25jb2x0IiwiYSI6ImNtYng2eHI0ZjB3cjQybW9zNXZhaDJqanYifQ.0qZEU6MBjiTZiUDPs6JyoQ',
+                              'id': isSatellite 
+                                  ? 'mapbox/satellite-streets-v12' 
+                                  : 'mapbox/outdoors-v12',
+                            },
+                            tileProvider: CancellableNetworkTileProvider(),
+                          ),
+                          if (isSelected)
+                            ColorFiltered(
+                              colorFilter: ColorFilter.mode(
+                                Colors.black.withOpacity(0.5),
+                                BlendMode.darken,
+                              ),
+                              child: TileLayer(
+                                urlTemplate: "https://api.mapbox.com/styles/v1/{id}/tiles/256/{z}/{x}/{y}@2x?access_token={accessToken}",
+                                additionalOptions: {
+                                  'accessToken': 'pk.eyJ1IjoibW9yZ25jb2x0IiwiYSI6ImNtYng2eHI0ZjB3cjQybW9zNXZhaDJqanYifQ.0qZEU6MBjiTZiUDPs6JyoQ',
+                                  'id': isSatellite 
+                                      ? 'mapbox/satellite-streets-v12' 
+                                      : 'mapbox/outdoors-v12',
+                                },
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            'Owner: ${prop['owner'] ?? 'Unknown'}',
-                            style: const TextStyle(color: Colors.white70, fontSize: 12),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            '${(prop['description'] ?? '').toString()}',
-                            style: const TextStyle(color: Colors.white60, fontSize: 12),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                          PolygonLayer(
+                            polygons: [
+                              Polygon(
+                                points: poly,
+                                color: isSelected
+                                    ? Colors.white.withOpacity(0.7)
+                                    : Colors.blue.withOpacity(0.3),
+                                borderColor: isSelected ? Colors.white : Colors.blue,
+                                borderStrokeWidth: isSelected ? 3 : 2,
+                                isFilled: true,
+                              ),
+                            ],
                           ),
                         ],
                       ),
                     ),
-
-                    // ⋮ Menu
-                    PopupMenuButton<String>(
-                      icon: const Icon(Icons.more_vert, color: Colors.white),
-                      onSelected: (value) {
-                        switch (value) {
-                          case 'satellite':
-                            setState(() => _showSatelliteList[index] = !_showSatelliteList[index]);
-                            break;
-                          case 'details':
-                            _showDetails(index);
-                            break;
-                          case 'delete':
-                            _deleteProperty(index);
-                            break;
-                        }
-                      },
-                      itemBuilder: (_) => [
-                        PopupMenuItem(
-                          value: 'satellite',
-                          child: Text(
-                            _showSatelliteList[index] ? 'Normal View' : 'Satellite View',
-                          ),
-                        ),
-                        const PopupMenuItem(
-                          value: 'details',
-                          child: Text('Details'),
-                        ),
-                        const PopupMenuItem(
-                          value: 'delete',
-                          child: Text(
-                            'Delete Property',
-                            style: TextStyle(color: Colors.red),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-
-  }
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('My Properties in ${widget.regionKey}'),
-      ),
-      body: SafeArea(
-        child: _userProperties.isEmpty && !_isLoading
-            ? const Center(
-                child: Text(
-                  'No properties found',
-                  style: TextStyle(fontSize: 18),
-                ),
-              )
-            : RefreshIndicator(
-                onRefresh: () async {
-                  setState(() {
-                    _userProperties.clear();
-                    _polygonPointsList.clear();
-                    _documentIds.clear();
-                    _showSatelliteList.clear();
-                    _hasMore = true;
-                    _lastDocument = null;
-                  });
-                  await _fetchProperties();
-                },
-                child: ListView.builder(
-                  controller: _scrollController,
-                  padding: EdgeInsets.zero,
-                  itemCount: _userProperties.length + (_hasMore ? 1 : 0),
-                  itemBuilder: (context, index) {
-                    if (index == _userProperties.length) {
-                      return const Padding(
-                        padding: EdgeInsets.all(16),
-                        child: Center(child: CircularProgressIndicator()),
-                      );
-                    }
-                    return GestureDetector(
-                      onTap: () {
+                  ),
+                  Positioned(
+                    bottom: 8,
+                    right: 8,
+                    child: FloatingActionButton(
+                      mini: true,
+                      heroTag: 'fullscreen_$index',
+                      child: const Icon(Icons.fullscreen),
+                      onPressed: () {
                         Navigator.push(
                           context,
                           MaterialPageRoute(
                             builder: (_) => MapScreen(
-                              regionKey: widget.regionKey,
+                              regionId: widget.regionId,
                               geojsonPath: widget.geojsonPath,
                               highlightPolygon: _polygonPointsList[index],
                             ),
                           ),
                         );
                       },
-                      child: _buildPropertyCard(index),
-                    );
-                  },
-                ),
+                    ),
+                  ),
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: PopupMenuButton<String>(
+                      icon: const Icon(Icons.more_vert, color: Colors.white),
+                      itemBuilder: (context) => [
+                        PopupMenuItem(
+                          value: 'view_blockchain',
+                          child: const Text('View on Blockchain'),
+                        ),
+                        PopupMenuItem(
+                          value: 'land_deed',
+                          child: const Text('View Land Deed'),
+                        ),
+                        PopupMenuItem(
+                          value: 'toggle_view',
+                          child: Text(isSatellite ? 'Normal View' : 'Satellite View'),
+                        ),
+                        const PopupMenuItem(
+                          value: 'zoom_in',
+                          child: Text('Zoom In'),
+                        ),
+                        const PopupMenuItem(
+                          value: 'zoom_out',
+                          child: Text('Zoom Out'),
+                        ),
+                        const PopupMenuDivider(),
+                        PopupMenuItem(
+                          value: 'delete',
+                          child: const Text('Delete Property', style: TextStyle(color: Colors.red)),
+                        ),
+                      ],
+                      onSelected: (value) {
+                        switch (value) {
+                          case 'view_blockchain':
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Opening blockchain explorer...')),
+                            );
+                            break;
+                          case 'land_deed':
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Showing land deed...')),
+                            );
+                            break;
+                          case 'toggle_view':
+                            setState(() {
+                              _satelliteViewMap[index] = !isSatellite;
+                            });
+                            break;
+                          case 'zoom_in':
+                            final currentZoom = _zoomLevelMap[index] ?? 15.0;
+                            final newZoom = currentZoom + 1;
+                            _mapControllers[index]?.move(_centerMap[index] ?? LatLngBounds.fromPoints(_polygonPointsList[index]).center, newZoom);
+                            setState(() {
+                              _zoomLevelMap[index] = newZoom;
+                            });
+                            break;
+                          case 'zoom_out':
+                            final currentZoom = _zoomLevelMap[index] ?? 15.0;
+                            final newZoom = currentZoom - 1;
+                            _mapControllers[index]?.move(_centerMap[index] ?? LatLngBounds.fromPoints(_polygonPointsList[index]).center, newZoom);
+                            setState(() {
+                              _zoomLevelMap[index] = newZoom;
+                            });
+                            break;
+                          case 'delete':
+                            _deleteProperty(index);
+                            break;
+                        }
+                      },
+                    ),
+                  ),
+                ],
               ),
+            ),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Theme.of(context).cardColor,
+                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        prop['title_number'] ?? 'Untitled Property',
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Chip(
+                        label: Text(
+                          '${prop['area_sqkm']?.toStringAsFixed(2) ?? '0.00'} km²',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    prop['description'] ?? 'No description',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      const Icon(Icons.account_balance_wallet, size: 16),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          prop['wallet_address'] ?? 'No wallet',
+                          style: const TextStyle(fontSize: 12),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  if (prop['timestamp'] != null)
+                    Row(
+                      children: [
+                        const Icon(Icons.calendar_today, size: 16),
+                        const SizedBox(width: 4),
+                        Text(
+                          DateFormat('MMM d, y').format(
+                            (prop['timestamp'] as Timestamp).toDate()),
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPolygonInfoCard() {
+    if (_selectedPolygonDoc == null || !_showPolygonInfo) return const SizedBox();
+
+    return Positioned(
+      bottom: 16,
+      left: 16,
+      right: 16,
+      child: GestureDetector(
+        onTap: () => setState(() => _showPolygonInfo = false),
+        child: Card(
+          elevation: 8,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      _selectedPolygonDoc!['title_number'] ?? 'Property Details',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => setState(() => _showPolygonInfo = false),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                _buildInfoRow('Description', _selectedPolygonDoc!['description']),
+                _buildInfoRow('Wallet', _selectedPolygonDoc!['wallet_address']),
+                _buildInfoRow('Area', '${_selectedPolygonDoc!['area_sqkm']?.toStringAsFixed(2) ?? '0.00'} km²'),
+                if (_selectedPolygonDoc!['timestamp'] != null)
+                  _buildInfoRow(
+                    'Created',
+                    DateFormat('MMMM d, y').format(
+                      (_selectedPolygonDoc!['timestamp'] as Timestamp).toDate()),
+                  ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.public),
+                      label: const Text('View on Blockchain'),
+                      onPressed: () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Opening blockchain explorer...')),
+                        );
+                      },
+                    ),
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.description),
+                      label: const Text('Land Deed'),
+                      onPressed: () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Showing land deed...')),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String? value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 100,
+            child: Text(
+              '$label:',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+          Expanded(
+            child: Text(value ?? 'Not available'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (widget.onBackToHome != null) {
+              widget.onBackToHome!();
+            } else {
+              Navigator.pop(context);
+            }
+          },
+
+        ),
+        title: Container(
+          height: 40,
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: TextField(
+            decoration: InputDecoration(
+              prefixIcon: const Icon(Icons.search, size: 20),
+              hintText: 'Search properties...',
+              border: InputBorder.none,
+              contentPadding: const EdgeInsets.symmetric(vertical: 8),
+            ),
+            onChanged: (value) {
+              if (_searchDebounce?.isActive ?? false) _searchDebounce!.cancel();
+              _searchDebounce = Timer(const Duration(milliseconds: 500), () {
+                setState(() {
+                  _searchQuery = value.toLowerCase();
+                });
+              });
+            },
+          ),
+        ),
+        actions: [
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.filter_alt),
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'newest',
+                child: Text('Newest First'),
+              ),
+              const PopupMenuItem(
+                value: 'oldest',
+                child: Text('Oldest First'),
+              ),
+              const PopupMenuItem(
+                value: 'largest',
+                child: Text('Largest Area'),
+              ),
+              const PopupMenuItem(
+                value: 'smallest',
+                child: Text('Smallest Area'),
+              ),
+            ],
+            onSelected: (value) {
+              setState(() {
+                switch (value) {
+                  case 'newest':
+                    _userProperties.sort((a, b) => b['timestamp'].compareTo(a['timestamp']));
+                    break;
+                  case 'oldest':
+                    _userProperties.sort((a, b) => a['timestamp'].compareTo(b['timestamp']));
+                    break;
+                  case 'largest':
+                    _userProperties.sort((a, b) => (b['area_sqkm'] ?? 0).compareTo(a['area_sqkm'] ?? 0));
+                    break;
+                  case 'smallest':
+                    _userProperties.sort((a, b) => (a['area_sqkm'] ?? 0).compareTo(b['area_sqkm'] ?? 0));
+                    break;
+                }
+              });
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () {
+              setState(() {
+                _userProperties.clear();
+                _polygonPointsList.clear();
+                _documentIds.clear();
+                _hasMore = true;
+                _lastDocument = null;
+                _selectedPolygon = null;
+                _showPolygonInfo = false;
+                _satelliteViewMap.clear();
+                _zoomLevelMap.clear();
+                _centerMap.clear();
+                _searchQuery = '';
+              });
+              _fetchProperties();
+            },
+          ),
+        ],
+      ),
+      body: Stack(
+        children: [
+          if (_filteredProperties.isEmpty && !_isLoading)
+            Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.map_outlined, size: 64, color: Colors.grey),
+                  const SizedBox(height: 16),
+                  Text(
+                    _searchQuery.isEmpty ? 'No properties found' : 'No matching properties',
+                    style: const TextStyle(fontSize: 18, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => MapScreen(
+                            regionId: widget.regionId,
+                            geojsonPath: widget.geojsonPath,
+                            startDrawing: true,
+                          ),
+                        ),
+                      );
+                    },
+                    child: const Text('Create your first property'),
+                  ),
+                ],
+              ),
+            )
+          else
+            RefreshIndicator(
+              onRefresh: () async {
+                setState(() {
+                  _userProperties.clear();
+                  _polygonPointsList.clear();
+                  _documentIds.clear();
+                  _hasMore = true;
+                  _lastDocument = null;
+                  _selectedPolygon = null;
+                  _showPolygonInfo = false;
+                  _satelliteViewMap.clear();
+                  _zoomLevelMap.clear();
+                  _centerMap.clear();
+                  _searchQuery = '';
+                });
+                await _fetchProperties();
+              },
+              child: ListView.builder(
+                controller: _scrollController,
+                padding: const EdgeInsets.only(bottom: 80),
+                itemCount: _filteredProperties.length + (_hasMore ? 1 : 0),
+                itemBuilder: (context, index) {
+                  if (index == _filteredProperties.length) {
+                    return const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  return _buildPropertyCard(index);
+                },
+              ),
+            ),
+          _buildPolygonInfoCard(),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        child: const Icon(Icons.add),
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => MapScreen(
+                regionId: widget.regionId,
+                geojsonPath: widget.geojsonPath,
+                startDrawing: true,
+              ),
+            ),
+          );
+        },
       ),
     );
   }

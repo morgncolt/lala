@@ -45,8 +45,8 @@ class _LoginScreenState extends State<LoginScreen> {
           context,
           MaterialPageRoute(
             builder: (_) => const DashboardScreen(
-              regionKey:      "Cameroon",
-              geojsonPath:    "assets/cameroon.geojson",
+              regionId:      "Cameroon",
+              geojsonPath:    "assets/data/cameroon.geojson",
               initialTabIndex: 0,
             ),
           ),
@@ -83,8 +83,8 @@ class _LoginScreenState extends State<LoginScreen> {
           context,
           MaterialPageRoute(
             builder: (_) => const DashboardScreen(
-              regionKey:      "Cameroon",
-              geojsonPath:    "assets/cameroon.geojson",
+              regionId:      "Cameroon",
+              geojsonPath:    "assets/data/cameroon.geojson",
               initialTabIndex: 0,
             ),
           ),
