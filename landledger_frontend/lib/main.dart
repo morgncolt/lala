@@ -7,8 +7,18 @@ import 'firebase_options.dart';
 import 'login_screen.dart';
 import 'dashboard_screen.dart';
 import 'theme.dart'; // 👈 This is your theme file that contains buildDarkTheme()
+import 'dart:async';
+
 
 void main() async {
+
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.presentError(details);
+    debugPrint('🚨 Flutter error caught by onError: ${details.exception}');
+    debugPrint('${details.stack}');
+  };
+
+
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
@@ -18,7 +28,15 @@ void main() async {
     await FirebaseAuth.instance.setPersistence(Persistence.LOCAL);
   }
 
-  runApp(const LandLedgerApp());
+  
+
+    runZonedGuarded(() {
+    runApp(LandLedgerApp());
+  }, (Object error, StackTrace stackTrace) {
+    debugPrint('🚨 Uncaught zone error: $error');
+    debugPrint('$stackTrace');
+  });
+
 }
 
 class LandLedgerApp extends StatelessWidget {

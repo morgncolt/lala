@@ -44,20 +44,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _geojsonPath = widget.geojsonPath;
   }
 
+  void _openHomeWithBackToHome() {
+    setState(() {
+      _selectedIndex = 0; // Switch to Home tab
+      _selectedRegionId = widget.regionId; // Ensure region is set
+      _geojsonPath = widget.geojsonPath; // Ensure geojson path is set
+    });
+  }
+
   void _openMyPropertiesWithBackToHome() {
     setState(() {
-      _selectedIndex = 1; // Switch to My Properties tab
+      _selectedIndex = 0; // Switch to My Properties tab
       _selectedRegionId = widget.regionId; // Ensure region is set
       _geojsonPath = widget.geojsonPath; // Ensure geojson path is set
     });
   }
-  void _openMapWithBackToHome() {
-    setState(() {
-      _selectedIndex = 2; // Switch to Map tab
-      _selectedRegionId = widget.regionId; // Ensure region is set
-      _geojsonPath = widget.geojsonPath; // Ensure geojson path is set
-    });
-  }
+
   void _openCifWithBackToHome() {
     setState(() {
       _selectedIndex = 4; // Switch to CIF tab
@@ -76,13 +78,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         activeIcon: Icons.home_filled,
         label: 'Home',
         builder: (context, regionId, geojsonPath) {
-          print("🏠 Building HomeScreen with $regionId, $geojsonPath");
+          debugPrint("🏠 Building HomeScreen with $regionId, $geojsonPath");
           return HomeScreen(
             key: const ValueKey('home_screen'),
             currentRegionId: regionId ?? widget.regionId,
             initialSelectedId: regionId ?? widget.regionId,
             onRegionSelected: _onRegionSelected,
-            onGoToMap: _openMapWithBackToHome,
+            onGoToMap: _openHomeWithBackToHome,
           );
         },
 
@@ -94,8 +96,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         builder: (context, regionId, geojsonPath) => MyPropertiesScreen(
           regionId: regionId ?? widget.regionId,
           geojsonPath: geojsonPath ?? widget.geojsonPath,
-          onRegionSelected: _onRegionSelected,
+          onBackToHome: _openMyPropertiesWithBackToHome,
+          showBackArrow: true, // Important for back arrow to show
         ),
+
       ),
       NavigationItem(
         icon: Icons.map_outlined,
@@ -106,7 +110,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           geojsonPath: geojsonPath ?? widget.geojsonPath,
           openedFromTab: true,
           onRegionSelected: _onRegionSelected,
-          onOpenMyProperties: _openMyPropertiesWithBackToHome,
+          onOpenMyProperties: _openHomeWithBackToHome,
+          showBackArrow: true, // Important for back arrow to show
         ),
       ),
       NavigationItem(

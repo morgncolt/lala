@@ -14,6 +14,7 @@ class HomeScreen extends StatefulWidget {
   final void Function(String regionId, String geojsonPath)? onRegionSelected;
   final VoidCallback? onGoToMap;
   
+  
   const HomeScreen({
     Key? key,
     this.currentRegionId,
@@ -37,6 +38,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
 @override
 void initState() {
+  debugPrint("🏠 HomeScreen initState() with ${widget.currentRegionId}");
   super.initState();
   _regions = [
     {"id": "cameroon", "label": "Cameroon", "path": "assets/data/cameroon.geojson"},
@@ -444,10 +446,12 @@ void initState() {
 
   @override
   Widget build(BuildContext context) {
-    if (_selectedRegionId == null) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
+    // if (_selectedRegionId == null) {
+    //   return const Center(child: CircularProgressIndicator());
+    // }
+    try{
+      debugPrintStack(label: "🏠 HomeScreen build() with started");
+    
     return Scaffold(
       body: Column(
         children: [
@@ -462,8 +466,13 @@ void initState() {
             onSearchPressed: () {
               showSearch(
                 context: context,
-                delegate: PostSearchDelegate(_selectedRegionId!),
+                delegate: PostSearchDelegate(
+                  widget.currentRegionId ?? '', // Or _selectedRegionId if you want the dropdown-selected one
+                  onRegionSelected: widget.onRegionSelected,
+                ),
               );
+
+
             },
             user: _user,
           ),
@@ -643,6 +652,10 @@ void initState() {
         child: const Icon(Icons.post_add),
       ),
     );
+  }catch (e,  stackTrace){
+    debugPrint("🚨 HomeScreen build() failed: $e\n$stackTrace");
+    return const Center(child: Text("Something went wrong in HomeScreen"));
+  }
   }
 }
 
@@ -663,6 +676,7 @@ class _CustomAppBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    debugPrint("🏠 HomeScreen initState()");
     final theme = Theme.of(context);
     final currentRegion = regions.firstWhere(
       (r) => r['id'] == selectedRegionKey,
@@ -837,8 +851,10 @@ class _CustomAppBar extends StatelessWidget {
 
 class PostSearchDelegate extends SearchDelegate {
   final String regionKey;
+  final void Function(String regionId, String geojsonPath)? onRegionSelected;
 
-  PostSearchDelegate(this.regionKey);
+  PostSearchDelegate(this.regionKey, {this.onRegionSelected});
+
 
   @override
   List<Widget> buildActions(BuildContext context) {
@@ -853,14 +869,17 @@ class PostSearchDelegate extends SearchDelegate {
   }
 
   @override
+  @override
   Widget buildLeading(BuildContext context) {
-    return IconButton(
-      icon: Icon(Icons.arrow_back),
-      onPressed: () {
-        close(context, null);
-      },
-    );
+    // return IconButton(
+    //   icon: Icon(Icons.arrow_back),
+    //   onPressed: () {
+    //     close(context, null);
+    //   },
+    // );
+    return SizedBox(); // Empty leading widget
   }
+
 
   @override
   Widget buildResults(BuildContext context) {
@@ -892,12 +911,10 @@ class PostSearchDelegate extends SearchDelegate {
             final post = results[index].data() as Map<String, dynamic>;
             return ListTile(
               title: Text(post['description']),
-              onTap: () {
-                // Handle post selection
-              },
             );
           },
         );
+
       },
     );
   }

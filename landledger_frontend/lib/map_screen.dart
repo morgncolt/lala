@@ -25,6 +25,7 @@ class MapScreen extends StatefulWidget {
   final bool openedFromTab;
   final VoidCallback? onOpenMyProperties;
   final void Function(String regionId, String geojsonPath)? onRegionSelected;
+  final bool showBackArrow;
 
   const MapScreen({
     Key? key,
@@ -37,6 +38,7 @@ class MapScreen extends StatefulWidget {
     this.openedFromTab = false,
     this.onOpenMyProperties,
     this.onRegionSelected,
+    this.showBackArrow = false,
   }) : super(key: key);
 
 
@@ -551,6 +553,32 @@ class _MapScreenState extends State<MapScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(currentRegion?.name ?? 'Map View'),
+        leading: widget.showBackArrow
+          ? IconButton(
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () {
+                debugPrint("🔙 Back button pressed: mounted=$mounted");
+
+                if (widget.onBackToHome != null) {
+                  debugPrint("➡️ Calling onBackToHome callback");
+                  widget.onBackToHome!();
+                } else {
+                  final navigator = Navigator.of(context);
+                  if (navigator.canPop()) {
+                    debugPrint("✅ Navigator.pop called");
+                    navigator.pop();
+                  } else {
+                    debugPrint("⚠️ Nothing to pop from Navigator stack");
+                    // Optional: Route to home or use another fallback
+                    if (widget.openedFromTab && widget.onOpenMyProperties != null) {
+                      widget.onOpenMyProperties!();
+                    }
+                  }
+                }
+              },
+            )
+          : null,
+
         actions: [
           IconButton(
             icon: Icon(showSatellite ? Icons.map : Icons.satellite),
@@ -560,13 +588,9 @@ class _MapScreenState extends State<MapScreen> {
             icon: Icon(show3D ? Icons.zoom_out_map : Icons.threed_rotation),
             onPressed: () => setState(() => show3D = !show3D),
           ),
-          if (widget.openedFromTab)
-            IconButton(
-              icon: const Icon(Icons.arrow_back),
-              onPressed: widget.onBackToHome,
-            ),
         ],
       ),
+
       body: Stack(
         children: [
           FlutterMap(

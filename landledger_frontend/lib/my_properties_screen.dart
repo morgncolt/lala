@@ -14,6 +14,7 @@ class MyPropertiesScreen extends StatefulWidget {
   final List<LatLng>? highlightPolygon;
   final VoidCallback? onBackToHome;
   final void Function(String regionId, String geojsonPath)? onRegionSelected;
+  final bool showBackArrow;
 
   const MyPropertiesScreen({
     Key? key,
@@ -22,6 +23,7 @@ class MyPropertiesScreen extends StatefulWidget {
     this.highlightPolygon,
     this.onBackToHome,
     this.onRegionSelected,
+    this.showBackArrow = false, // default to false
   }) : super(key: key);
 
   @override
@@ -570,21 +572,28 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     );
   }
 
+  
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            if (widget.onBackToHome != null) {
-              widget.onBackToHome!();
-            } else {
-              Navigator.pop(context);
-            }
-          },
+        leading: widget.showBackArrow 
+          ? IconButton(
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () {
+                debugPrint('🔙 Back button pressed in MyPropertiesScreen');
 
-        ),
+                if (widget.onBackToHome != null) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    widget.onBackToHome!(); // safe tab switch
+                  });
+                } else {
+                  Navigator.pop(context);
+                }
+              },
+            )
+          : null,
+          
         title: Container(
           height: 40,
           decoration: BoxDecoration(
