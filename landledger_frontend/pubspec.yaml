@@ -39,6 +39,8 @@ dependencies:
   flutter_rating_bar: ^4.0.1
   intl: ^0.20.2
   geocoding: ^2.1.0
+  http: ^1.2.1
+  webview_flutter: ^4.2.2
   #mapbox_gl: ^0.16.0
 
 dev_dependencies:

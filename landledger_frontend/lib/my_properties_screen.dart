@@ -7,6 +7,9 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_cancellable_tile_provider/flutter_map_cancellable_tile_provider.dart';
 import 'package:intl/intl.dart';
 import 'map_screen.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'dashboard_screen.dart';
 
 class MyPropertiesScreen extends StatefulWidget {
   final String regionId;
@@ -15,6 +18,9 @@ class MyPropertiesScreen extends StatefulWidget {
   final VoidCallback? onBackToHome;
   final void Function(String regionId, String geojsonPath)? onRegionSelected;
   final bool showBackArrow;
+  final void Function(Map<String, dynamic> blockchainData)? onBlockchainRecordSelected;
+
+  
 
   const MyPropertiesScreen({
     Key? key,
@@ -23,13 +29,13 @@ class MyPropertiesScreen extends StatefulWidget {
     this.highlightPolygon,
     this.onBackToHome,
     this.onRegionSelected,
-    this.showBackArrow = false, // default to false
+    this.showBackArrow = false,
+    this.onBlockchainRecordSelected,
   }) : super(key: key);
 
   @override
   State<MyPropertiesScreen> createState() => _MyPropertiesScreenState();
 }
-
 
 class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
   final List<Map<String, dynamic>> _userProperties = [];
@@ -64,6 +70,22 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     _debounce?.cancel();
     _searchDebounce?.cancel();
     super.dispose();
+  }
+
+  Future<Map<String, dynamic>?> fetchPolygonFromBlockchain(String titleNumber) async {
+    final url = Uri.parse('http://10.0.2.2:4000/api/landledger/$titleNumber');
+    try {
+      final response = await http.get(url);
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      } else {
+        debugPrint('❌ Failed to fetch from blockchain: ${response.statusCode}');
+        return null;
+      }
+    } catch (e) {
+      debugPrint('❌ Blockchain fetch error: $e');
+      return null;
+    }
   }
 
   void _onScroll() {
@@ -231,14 +253,14 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     }
   }
 
-  Widget _buildPropertyCard(int index) {
+Widget _buildPropertyCard(int index) {
     final prop = _userProperties[index];
     final poly = _polygonPointsList[index];
     final isSelected = _selectedPolygon == poly;
     final isSatellite = _satelliteViewMap[index] ?? false;
     final zoomLevel = _zoomLevelMap[index] ?? 15.0;
     final center = _centerMap[index] ?? LatLngBounds.fromPoints(poly).center;
-    
+    final titleNumber = prop['title_number'] ?? 'Untitled Property';
 
     return GestureDetector(
       onTap: () => _handlePolygonTap(index),
@@ -368,44 +390,60 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                           child: const Text('Delete Property', style: TextStyle(color: Colors.red)),
                         ),
                       ],
-                      onSelected: (value) {
-                        switch (value) {
-                          case 'view_blockchain':
+                     onSelected: (value) async {
+                      switch (value) {
+                        case 'view_blockchain':
+                          final titleNumber = prop['title_number'];
+                          final url = Uri.parse('http://10.0.2.2:4000/api/landledger/$titleNumber');
+
+                          try {
+                            final response = await http.get(url);
+                            if (response.statusCode == 200) {
+                              final data = jsonDecode(response.body);
+
+                              if (widget.onBlockchainRecordSelected != null) {
+                                widget.onBlockchainRecordSelected!(data);
+                              }
+
+                            } else {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('❌ Not found: ${response.statusCode}')),
+                              );
+                            }
+                          } catch (e) {
                             ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Opening blockchain explorer...')),
+                              SnackBar(content: Text('❌ Error: $e')),
                             );
-                            break;
-                          case 'land_deed':
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Showing land deed...')),
-                            );
-                            break;
-                          case 'toggle_view':
-                            setState(() {
-                              _satelliteViewMap[index] = !isSatellite;
-                            });
-                            break;
-                          case 'zoom_in':
-                            final currentZoom = _zoomLevelMap[index] ?? 15.0;
-                            final newZoom = currentZoom + 1;
-                            _mapControllers[index]?.move(_centerMap[index] ?? LatLngBounds.fromPoints(_polygonPointsList[index]).center, newZoom);
-                            setState(() {
-                              _zoomLevelMap[index] = newZoom;
-                            });
-                            break;
-                          case 'zoom_out':
-                            final currentZoom = _zoomLevelMap[index] ?? 15.0;
-                            final newZoom = currentZoom - 1;
-                            _mapControllers[index]?.move(_centerMap[index] ?? LatLngBounds.fromPoints(_polygonPointsList[index]).center, newZoom);
-                            setState(() {
-                              _zoomLevelMap[index] = newZoom;
-                            });
-                            break;
-                          case 'delete':
-                            _deleteProperty(index);
-                            break;
-                        }
-                      },
+                          }
+                          break;
+                      case 'delete':
+                        await _deleteProperty(index);
+                        break;
+
+                      case 'toggle_view':
+                        setState(() {
+                          _satelliteViewMap[index] = !(_satelliteViewMap[index] ?? false);
+                        });
+                        break;
+
+                      case 'zoom_in':
+                        setState(() {
+                          _zoomLevelMap[index] = (_zoomLevelMap[index] ?? 15.0) + 1;
+                          _mapControllers[index]?.move(center, _zoomLevelMap[index]!);
+                        });
+                        break;
+
+                      case 'zoom_out':
+                        setState(() {
+                          _zoomLevelMap[index] = (_zoomLevelMap[index] ?? 15.0) - 1;
+                          _mapControllers[index]?.move(center, _zoomLevelMap[index]!);
+                        });
+                        break;
+                      }
+
+                    },
+                    
+
                     ),
                   ),
                 ],
@@ -572,7 +610,6 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     );
   }
 
-  
   @override
   Widget build(BuildContext context) {
     return Scaffold(

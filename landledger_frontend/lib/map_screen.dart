@@ -13,6 +13,8 @@ import 'package:intl/intl.dart';
 import 'region_model.dart';
 import 'regions_repository.dart';
 import 'package:geocoding/geocoding.dart';
+import 'package:http/http.dart' as http;
+
 
 
 class MapScreen extends StatefulWidget {
@@ -26,6 +28,7 @@ class MapScreen extends StatefulWidget {
   final VoidCallback? onOpenMyProperties;
   final void Function(String regionId, String geojsonPath)? onRegionSelected;
   final bool showBackArrow;
+  final void Function(Map<String, dynamic>)? onBlockchainUpdate;
 
   const MapScreen({
     Key? key,
@@ -39,6 +42,7 @@ class MapScreen extends StatefulWidget {
     this.onOpenMyProperties,
     this.onRegionSelected,
     this.showBackArrow = false,
+    this.onBlockchainUpdate,
   }) : super(key: key);
 
 
@@ -302,6 +306,90 @@ class _MapScreenState extends State<MapScreen> {
     return LatLng(latSum / points.length, lngSum / points.length);
   }
 
+  // In your saveToBlockchain function, replace the state lookup with this improved version:
+  Future<void> saveToBlockchain(String id, List<LatLng> points, String wallet, String description) async {
+    final url = Uri.parse('http://10.0.2.2:4000/api/landledger');
+
+    final geoJson = {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          points.map((p) => [p.longitude, p.latitude]).toList() + 
+          [[points.first.longitude, points.first.latitude]]
+        ],
+      },
+      "properties": {
+        "id": id,
+        "owner": wallet,
+        "description": description,
+        "timestamp": DateTime.now().toIso8601String(),
+        "verified": false
+      }
+    };
+
+    try {
+      final response = await http.post(
+        Uri.parse('http://<your-server-ip>:4000/api/landledger/register'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          "id": id,
+          "geoJson": geoJson,
+          "wallet": wallet,
+          "description": description,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        print("✅ Blockchain registration success");
+        final blockchainRecord = jsonDecode(response.body);
+
+        // Improved state handling options:
+
+        // Option 1: Use Navigator to pass data back
+        if (mounted) {
+          Navigator.of(context).pop(blockchainRecord);
+        }
+
+        // Option 2: Use a callback passed to MapScreen
+        if (widget.onBlockchainUpdate != null) {
+          widget.onBlockchainUpdate!(blockchainRecord);
+        }
+
+        // Option 3: Show a success dialog
+        if (mounted) {
+          showDialog(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text("Success"),
+              content: Text("Blockchain record created: ${blockchainRecord['id']}"),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text("OK"),
+                ),
+              ],
+            ),
+          );
+        }
+      } else {
+        print("❌ Blockchain registration failed: ${response.body}");
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Blockchain error: ${response.body}")),
+          );
+        }
+      }
+    } catch (e) {
+      print("❌ Error saving to blockchain: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error: $e")),
+        );
+      }
+    }
+  }
+
   Future<void> savePolygon() async {
     if (currentPolygonPoints.length < 3 || user == null || !mounted) return;
 
@@ -371,6 +459,36 @@ class _MapScreenState extends State<MapScreen> {
             "timestamp": FieldValue.serverTimestamp(),
           });
 
+          try {
+            final response = await http.post(
+              Uri.parse('http://10.0.2.2:4000/api/landledger/register'),
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({
+                'id': llid,
+                'owner': walletController.text,
+                'description': descriptionController.text,
+              }),
+            );
+
+            if (response.statusCode == 200) {
+              print("✅ Blockchain registration success");
+            } else {
+              print("❌ Blockchain registration failed: ${response.body}");
+            }
+          } catch (e) {
+            print("❌ Error registering to blockchain: $e");
+          }
+
+      
+      await saveToBlockchain(
+        llid,
+        currentPolygonPoints,
+        walletController.text,
+        descriptionController.text,
+      );
+      debugPrint("✅ Polygon saved successfully with ID: $llid");
+
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text("Region saved successfully")),
@@ -389,6 +507,36 @@ class _MapScreenState extends State<MapScreen> {
       }
     }
   }
+
+  Future<Map<String, dynamic>?> fetchPolygonFromBlockchain(String id) async {
+    final url = Uri.parse('http://10.0.2.2:4000/api/landledger/$id');
+
+    try {
+      final response = await http.get(url);
+
+      if (response.statusCode == 200) {
+        final jsonBody = json.decode(response.body);
+        final coordinates = (jsonBody['polygon'] as List)
+            .map((coord) => LatLng(coord[1], coord[0]))
+            .toList();
+
+        return {
+          "polygon": coordinates,
+          "owner": jsonBody['owner'],
+          "description": jsonBody['description'],
+          "timestamp": jsonBody['createdAt'],
+        };
+      } else {
+        debugPrint("❌ Failed to fetch: ${response.body}");
+        return null;
+      }
+    } catch (e) {
+      debugPrint("❌ Error fetching from blockchain: $e");
+      return null;
+    }
+  }
+
+
 
   Widget buildMapControls() {
   return Stack(

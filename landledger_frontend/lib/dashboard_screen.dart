@@ -34,10 +34,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _isDrawerOpen = false;
   late final List<NavigationItem> _navigationItems;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  late final ValueNotifier<Map<String, dynamic>?> blockchainDataNotifier;
 
   @override
   void initState() {
-    super.initState();
+    super.initState(); // ✅ This must come first
+    blockchainDataNotifier = ValueNotifier(null); // ✅ Must be initialized before use
     _navigationItems = _buildNavigationItems();
     _selectedIndex = widget.initialTabIndex.clamp(0, _navigationItems.length - 1);
     _selectedRegionId = widget.regionId;
@@ -65,9 +67,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _selectedIndex = 4; // Switch to CIF tab
     });
   }
+  
   void _openLandLedgerWithBackToHome() {
     setState(() {
       _selectedIndex = 3; // Switch to LandLedger tab
+    });
+  }
+
+  void updateBlockchainDataAndNavigate(Map<String, dynamic> record) {
+    blockchainDataNotifier.value = record;
+    setState(() {
+      _selectedIndex = 3;
     });
   }
 
@@ -77,17 +87,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         icon: Icons.home_outlined,
         activeIcon: Icons.home_filled,
         label: 'Home',
-        builder: (context, regionId, geojsonPath) {
-          debugPrint("🏠 Building HomeScreen with $regionId, $geojsonPath");
-          return HomeScreen(
-            key: const ValueKey('home_screen'),
-            currentRegionId: regionId ?? widget.regionId,
-            initialSelectedId: regionId ?? widget.regionId,
-            onRegionSelected: _onRegionSelected,
-            onGoToMap: _openHomeWithBackToHome,
-          );
-        },
-
+        builder: (context, regionId, geojsonPath) => HomeScreen(
+          key: const ValueKey('home_screen'),
+          currentRegionId: regionId ?? widget.regionId,
+          initialSelectedId: regionId ?? widget.regionId,
+          onRegionSelected: _onRegionSelected,
+          onGoToMap: _openHomeWithBackToHome,
+        ),
       ),
       NavigationItem(
         icon: Icons.list_alt_outlined,
@@ -97,9 +103,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           regionId: regionId ?? widget.regionId,
           geojsonPath: geojsonPath ?? widget.geojsonPath,
           onBackToHome: _openMyPropertiesWithBackToHome,
-          showBackArrow: true, // Important for back arrow to show
+          showBackArrow: true,
+          onBlockchainRecordSelected: updateBlockchainDataAndNavigate,
         ),
-
       ),
       NavigationItem(
         icon: Icons.map_outlined,
@@ -111,14 +117,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
           openedFromTab: true,
           onRegionSelected: _onRegionSelected,
           onOpenMyProperties: _openHomeWithBackToHome,
-          showBackArrow: true, // Important for back arrow to show
+          showBackArrow: true,
         ),
       ),
       NavigationItem(
         icon: Icons.analytics_outlined,
         activeIcon: Icons.analytics,
         label: 'LandLedger',
-        builder: (context, _, __) => const LandledgerScreen(),
+        builder: (context, _, __) => LandledgerScreen(blockchainDataNotifier: blockchainDataNotifier),
         onTap: _openLandLedgerWithBackToHome,
       ),
       NavigationItem(
@@ -185,14 +191,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           
         ],
       ),
-      // floatingActionButton: _selectedIndex == 2
-      //     ? FloatingActionButton(
-      //         child: const Icon(Icons.my_location),
-      //         onPressed: () {
-      //           // Handle map location action
-      //         },
-      //       )
-      //     : null,
+
     );
   }
 
