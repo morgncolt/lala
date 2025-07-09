@@ -1,0 +1,53 @@
+name: landledger_frontend
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.7.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  google_fonts: ^6.1.0
+  flutter_vector_icons: ^2.0.0
+  flutter_map: ^6.2.1
+  latlong2: ^0.9.0
+  path_provider: ^2.0.15
+  flutter_map_mbtiles: ^1.0.0
+  cupertino_icons: ^1.0.8
+  firebase_core: ^3.12.1
+  firebase_auth: ^5.5.1
+  firebase_ui_auth: ^1.16.1
+  google_sign_in: ^6.3.0
+  google_sign_in_web: ^0.12.4+4
+  cloud_firestore: ^5.6.5
+  url_launcher: ^6.3.1
+  google_maps_flutter: ^2.10.1
+  google_maps_flutter_web: ^0.5.11
+  geolocator: ^11.0.0
+  flutter_map_cancellable_tile_provider: ^1.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/google_logo.png
+    - assets/data/regions.geojson
+    - assets/maps/osm-2020-02-10-v3.11_africa_cameroon.mbtiles
+    - assets/maps/osm-2020-02-10-v3.11_africa_ghana.mbtiles
+    - assets/maps/osm-2020-02-10-v3.11_nigeria_abuja.mbtiles
+    - assets/maps/osm-2020-02-10-v3.11_ghana_accra.mbtiles
+    - assets/maps/osm-2020-02-10-v3.11_nigeria_lagos.mbtiles
+    - assets/maps/osm-2020-02-10-v3.11_kenya_nairobi.mbtiles
+    - assets/data/ghana.geojson
+    - assets/data/cameroon.geojson
+    - assets/data/nigeria_abj.geojson
+    - assets/data/nigeria_lagos.geojson
+    - assets/data/kenya.geojson
+    # - assets/maps/tiles.mbtiles   # Commented out for now

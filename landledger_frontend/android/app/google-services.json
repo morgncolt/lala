@@ -1,0 +1,46 @@
+{
+  "project_info": {
+    "project_number": "829972798062",
+    "project_id": "landledger-africa",
+    "storage_bucket": "landledger-africa.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:829972798062:android:883ad2fdfff29562f9247f",
+        "android_client_info": {
+          "package_name": "com.example.landledger_frontend"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "829972798062-iujmhdiulvkdalmqvecmvkrrngk4r51m.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCYAhTzZQ7era3DtCnKDxCTZm_tkEIw_sg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "829972798062-iujmhdiulvkdalmqvecmvkrrngk4r51m.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "829972798062-j97p91tqtc5nlvqu1pv9hrnvd2nae7vh.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.landledgerFrontend"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

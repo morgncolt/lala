@@ -1,0 +1,25 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "owner": "Tunde Balogun",
+        "title_number": "NG-LAG-001",
+        "description": "Lekki Phase 1"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [3.3, 6.4],
+            [3.35, 6.45],
+            [3.3, 6.5],
+            [3.25, 6.45], 
+            [3.3, 6.4]
+          ]
+        ]
+      }
+    }
+  ]
+}
