@@ -1,0 +1,20 @@
+cat <<EOF > .gitignore
+# Ignore all node and Go build artifacts
+**/node_modules/
+**/vendor/
+**/*.log
+
+# Wallets, certs, system files
+**/wallet/
+**/organizations/
+**/*.block
+**/*.tx
+**/*.pem
+**/*.key
+**/*.crt
+
+# General
+.env
+.DS_Store
+EOF
+
