@@ -306,17 +306,16 @@ class _MapScreenState extends State<MapScreen> {
     return LatLng(latSum / points.length, lngSum / points.length);
   }
 
-  // In your saveToBlockchain function, replace the state lookup with this improved version:
   Future<void> saveToBlockchain(String id, List<LatLng> points, String wallet, String description) async {
-    final url = Uri.parse('http://10.0.2.2:4000/api/landledger');
+    final url = Uri.parse('http://10.0.2.2:4000/api/landledger/register');
 
     final geoJson = {
       "type": "Feature",
       "geometry": {
         "type": "Polygon",
         "coordinates": [
-          points.map((p) => [p.longitude, p.latitude]).toList() + 
-          [[points.first.longitude, points.first.latitude]]
+          points.map((p) => [p.longitude, p.latitude]).toList()
+            ..add([points.first.longitude, points.first.latitude])
         ],
       },
       "properties": {
@@ -330,39 +329,29 @@ class _MapScreenState extends State<MapScreen> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://<your-server-ip>:4000/api/landledger/register'),
+        url,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          "id": id,
-          "geoJson": geoJson,
-          "wallet": wallet,
+          "parcelId": id,
+          "titleNumber": id,
+          "owner": wallet,
+          "coordinates": points.map((p) => {"lat": p.latitude, "lng": p.longitude}).toList(),
+          "areaSqKm": calculateArea(points),
           "description": description,
         }),
       );
 
       if (response.statusCode == 200) {
-        print("✅ Blockchain registration success");
         final blockchainRecord = jsonDecode(response.body);
+        debugPrint("✅ Blockchain registration success");
 
-        // Improved state handling options:
-
-        // Option 1: Use Navigator to pass data back
+        // Show confirmation dialog
         if (mounted) {
-          Navigator.of(context).pop(blockchainRecord);
-        }
-
-        // Option 2: Use a callback passed to MapScreen
-        if (widget.onBlockchainUpdate != null) {
-          widget.onBlockchainUpdate!(blockchainRecord);
-        }
-
-        // Option 3: Show a success dialog
-        if (mounted) {
-          showDialog(
+          await showDialog(
             context: context,
             builder: (context) => AlertDialog(
-              title: const Text("Success"),
-              content: Text("Blockchain record created: ${blockchainRecord['id']}"),
+              title: const Text("✅ Blockchain Success"),
+              content: Text("Polygon ${id} successfully saved to the blockchain."),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context),
@@ -372,23 +361,31 @@ class _MapScreenState extends State<MapScreen> {
             ),
           );
         }
+
       } else {
-        print("❌ Blockchain registration failed: ${response.body}");
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Blockchain error: ${response.body}")),
-          );
-        }
+        final errMsg = jsonDecode(response.body)['error'] ?? response.body;
+        throw Exception("Blockchain Error: $errMsg");
       }
     } catch (e) {
-      print("❌ Error saving to blockchain: $e");
+      debugPrint("❌ Error saving to blockchain: $e");
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Error: $e")),
+        await showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text("❌ Blockchain Error"),
+            content: Text("Failed to save to blockchain:\n$e"),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text("OK"),
+              ),
+            ],
+          ),
         );
       }
     }
   }
+
 
   Future<void> savePolygon() async {
     if (currentPolygonPoints.length < 3 || user == null || !mounted) return;
@@ -442,6 +439,7 @@ class _MapScreenState extends State<MapScreen> {
     if (confirm != true) return;
 
     try {
+      // Save to Firestore
       await FirebaseFirestore.instance
           .collection("users")
           .doc(user!.uid)
@@ -459,35 +457,15 @@ class _MapScreenState extends State<MapScreen> {
             "timestamp": FieldValue.serverTimestamp(),
           });
 
-          try {
-            final response = await http.post(
-              Uri.parse('http://10.0.2.2:4000/api/landledger/register'),
-              headers: {'Content-Type': 'application/json'},
-              body: jsonEncode({
-                'id': llid,
-                'owner': walletController.text,
-                'description': descriptionController.text,
-              }),
-            );
-
-            if (response.statusCode == 200) {
-              print("✅ Blockchain registration success");
-            } else {
-              print("❌ Blockchain registration failed: ${response.body}");
-            }
-          } catch (e) {
-            print("❌ Error registering to blockchain: $e");
-          }
-
-      
+      // Save to Blockchain (Node.js API)
       await saveToBlockchain(
         llid,
         currentPolygonPoints,
         walletController.text,
         descriptionController.text,
       );
-      debugPrint("✅ Polygon saved successfully with ID: $llid");
 
+      debugPrint("✅ Polygon saved successfully with ID: $llid");
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -507,6 +485,7 @@ class _MapScreenState extends State<MapScreen> {
       }
     }
   }
+
 
   Future<Map<String, dynamic>?> fetchPolygonFromBlockchain(String id) async {
     final url = Uri.parse('http://10.0.2.2:4000/api/landledger/$id');
@@ -597,7 +576,7 @@ class _MapScreenState extends State<MapScreen> {
                 : FloatingActionButton(
                     heroTag: "btn-draw-toggle",
                     backgroundColor:
-                        isDrawing ? Colors.red : Colors.green,
+                        isDrawing ? Colors.red : const Color.fromARGB(255, 2, 76, 63),
                     child: Icon(isDrawing
                         ? Icons.close
                         : Icons.edit_location_alt),

@@ -10,6 +10,7 @@ import 'map_screen.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dashboard_screen.dart';
+import 'landledger_screen.dart';
 
 class MyPropertiesScreen extends StatefulWidget {
   final String regionId;
@@ -19,8 +20,6 @@ class MyPropertiesScreen extends StatefulWidget {
   final void Function(String regionId, String geojsonPath)? onRegionSelected;
   final bool showBackArrow;
   final void Function(Map<String, dynamic> blockchainData)? onBlockchainRecordSelected;
-
-  
 
   const MyPropertiesScreen({
     Key? key,
@@ -72,18 +71,33 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     super.dispose();
   }
 
-  Future<Map<String, dynamic>?> fetchPolygonFromBlockchain(String titleNumber) async {
-    final url = Uri.parse('http://10.0.2.2:4000/api/landledger/$titleNumber');
+  Future<Map<String, dynamic>?> fetchLandRecord(String parcelId) async {
+    final url = Uri.parse('http://10.0.2.2:4000/api/landledger/$parcelId');
     try {
-      final response = await http.get(url);
+      final response = await http.get(url).timeout(const Duration(seconds: 5));
+      
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        final data = json.decode(response.body);
+        
+        // Ensure data matches expected format
+        if (data['title_number'] == null || data['coordinates'] == null) {
+          debugPrint('⚠️ Invalid record format received');
+          return null;
+        }
+        
+        return data;
+      } else if (response.statusCode == 404) {
+        debugPrint('🔍 Land record $parcelId not found on blockchain');
+        return null;
       } else {
-        debugPrint('❌ Failed to fetch from blockchain: ${response.statusCode}');
+        debugPrint('❌ Server error: ${response.statusCode}');
         return null;
       }
+    } on TimeoutException {
+      debugPrint('⏱️ Timeout fetching land record');
+      return null;
     } catch (e) {
-      debugPrint('❌ Blockchain fetch error: $e');
+      debugPrint('❌ Network error: $e');
       return null;
     }
   }
@@ -146,7 +160,6 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
           polys.add(coords);
           ids.add(doc.id);
           
-          // Initialize view settings for each property
           final index = _userProperties.length + props.length - 1;
           _mapControllers[index] = MapController();
           _satelliteViewMap[index] = false;
@@ -253,14 +266,54 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     }
   }
 
-Widget _buildPropertyCard(int index) {
+  Widget _buildPropertyCard(int index) {
     final prop = _userProperties[index];
+
+      // Handle both Firestore and blockchain data formats
+    final titleNumber = prop['title_number'] ?? prop['parcelId'] ?? 'Untitled Property';
+    final owner = prop['owner'] ?? prop['ownerId'] ?? 'Unknown Owner';
+    
+    // Parse coordinates from either format
+    List<LatLng> coordinates = [];
+    if (prop['coordinates'] is List) {
+      coordinates = (prop['coordinates'] as List)
+          .where((c) => c is Map && c['lat'] != null && c['lng'] != null)
+          .map((c) => LatLng(
+                (c['lat'] as num).toDouble(),
+                (c['lng'] as num).toDouble(),
+              ))
+          .toList();
+    } else if (prop['Polygon'] is List) {
+      coordinates = (prop['Polygon'] as List)
+          .where((point) => point is List && point.length == 2)
+          .map((point) => LatLng(
+                (point[0] as num).toDouble(),
+                (point[1] as num).toDouble(),
+              ))
+          .toList();
+    }
     final poly = _polygonPointsList[index];
+
+    if (poly.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
     final isSelected = _selectedPolygon == poly;
     final isSatellite = _satelliteViewMap[index] ?? false;
     final zoomLevel = _zoomLevelMap[index] ?? 15.0;
-    final center = _centerMap[index] ?? LatLngBounds.fromPoints(poly).center;
-    final titleNumber = prop['title_number'] ?? 'Untitled Property';
+
+    final center = _centerMap[index] ?? (poly.isNotEmpty
+      ? LatLngBounds.fromPoints(poly).center
+      : const LatLng(0.0, 0.0));
+
+    _mapControllers.putIfAbsent(index, () => MapController());
+    final controller = _mapControllers[index]!;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      controller.move(center, zoomLevel);
+    });
+
+    final altTitleNumber = prop['title_number'] ?? 'Untitled Property'; // ✅ Renamed
 
     return GestureDetector(
       onTap: () => _handlePolygonTap(index),
@@ -362,7 +415,7 @@ Widget _buildPropertyCard(int index) {
                     top: 8,
                     right: 8,
                     child: PopupMenuButton<String>(
-                      icon: const Icon(Icons.more_vert, color: Colors.white),
+                      icon: const Icon(Icons.more_vert, color: Color.fromARGB(255, 10, 10, 10)),
                       itemBuilder: (context) => [
                         PopupMenuItem(
                           value: 'view_blockchain',
@@ -390,60 +443,76 @@ Widget _buildPropertyCard(int index) {
                           child: const Text('Delete Property', style: TextStyle(color: Colors.red)),
                         ),
                       ],
-                     onSelected: (value) async {
-                      switch (value) {
-                        case 'view_blockchain':
-                          final titleNumber = prop['title_number'];
-                          final url = Uri.parse('http://10.0.2.2:4000/api/landledger/$titleNumber');
+                      onSelected: (value) async {
+                        switch (value) {
+                          case 'view_blockchain':
+                            final parcelId = prop['parcelId'] ?? prop['id'] ?? prop['title_number']?.replaceFirst('TN-', 'LL-');
 
-                          try {
-                            final response = await http.get(url);
-                            if (response.statusCode == 200) {
-                              final data = jsonDecode(response.body);
-
-                              if (widget.onBlockchainRecordSelected != null) {
-                                widget.onBlockchainRecordSelected!(data);
-                              }
-
-                            } else {
+                            if (titleNumber == null || titleNumber.isEmpty) {
                               ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('❌ Not found: ${response.statusCode}')),
+                                const SnackBar(content: Text('No title number available')),
+                              );
+                              return;
+                            }
+                            
+                            try {
+                              final url = Uri.parse('http://10.0.2.2:4000/api/landledger/parcel/$parcelId');
+
+                              final response = await http.get(url).timeout(const Duration(seconds: 5));
+                              
+                              if (response.statusCode == 200) {
+                                final data = jsonDecode(response.body);
+                                if (!mounted) return;
+                                
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => LandledgerScreen(
+                                      selectedRecord: data,
+                                    ),
+                                  ),
+                                );
+                              } else {
+                                if (!mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('Blockchain error: ${response.statusCode}')),
+                                );
+                              }
+                            } on TimeoutException {
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Request timeout - server took too long to respond')),
+                              );
+                            } catch (e) {
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('Error: ${e.toString()}')),
                               );
                             }
-                          } catch (e) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('❌ Error: $e')),
-                            );
-                          }
-                          break;
-                      case 'delete':
-                        await _deleteProperty(index);
-                        break;
+                            break;
 
-                      case 'toggle_view':
-                        setState(() {
-                          _satelliteViewMap[index] = !(_satelliteViewMap[index] ?? false);
-                        });
-                        break;
-
-                      case 'zoom_in':
-                        setState(() {
-                          _zoomLevelMap[index] = (_zoomLevelMap[index] ?? 15.0) + 1;
-                          _mapControllers[index]?.move(center, _zoomLevelMap[index]!);
-                        });
-                        break;
-
-                      case 'zoom_out':
-                        setState(() {
-                          _zoomLevelMap[index] = (_zoomLevelMap[index] ?? 15.0) - 1;
-                          _mapControllers[index]?.move(center, _zoomLevelMap[index]!);
-                        });
-                        break;
-                      }
-
-                    },
-                    
-
+                          case 'delete':
+                            await _deleteProperty(index);
+                            break;
+                          case 'toggle_view':
+                            setState(() {
+                              _satelliteViewMap[index] = !(_satelliteViewMap[index] ?? false);
+                            });
+                            break;
+                          case 'zoom_in':
+                            setState(() {
+                              _zoomLevelMap[index] = (_zoomLevelMap[index] ?? 15.0) + 1;
+                              _mapControllers[index]?.move(center, _zoomLevelMap[index]!);
+                            });
+                            break;
+                          case 'zoom_out':
+                            setState(() {
+                              _zoomLevelMap[index] = (_zoomLevelMap[index] ?? 15.0) - 1;
+                              _mapControllers[index]?.move(center, _zoomLevelMap[index]!);
+                            });
+                            break;
+                        }
+                      },
                     ),
                   ),
                 ],
@@ -521,6 +590,8 @@ Widget _buildPropertyCard(int index) {
   Widget _buildPolygonInfoCard() {
     if (_selectedPolygonDoc == null || !_showPolygonInfo) return const SizedBox();
 
+    final docData = _selectedPolygonDoc!.data() as Map<String, dynamic>? ?? {};
+
     return Positioned(
       bottom: 16,
       left: 16,
@@ -538,7 +609,7 @@ Widget _buildPropertyCard(int index) {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      _selectedPolygonDoc!['title_number'] ?? 'Property Details',
+                      docData['title_number'] ?? 'Property Details',
                       style: Theme.of(context).textTheme.titleLarge,
                     ),
                     IconButton(
@@ -548,14 +619,14 @@ Widget _buildPropertyCard(int index) {
                   ],
                 ),
                 const SizedBox(height: 8),
-                _buildInfoRow('Description', _selectedPolygonDoc!['description']),
-                _buildInfoRow('Wallet', _selectedPolygonDoc!['wallet_address']),
-                _buildInfoRow('Area', '${_selectedPolygonDoc!['area_sqkm']?.toStringAsFixed(2) ?? '0.00'} km²'),
-                if (_selectedPolygonDoc!['timestamp'] != null)
+                _buildInfoRow('Description', docData['description']),
+                _buildInfoRow('Wallet', docData['wallet_address']),
+                _buildInfoRow('Area', '${docData['area_sqkm']?.toStringAsFixed(2) ?? '0.00'} km²'),
+                if (docData['timestamp'] != null)
                   _buildInfoRow(
                     'Created',
                     DateFormat('MMMM d, y').format(
-                      (_selectedPolygonDoc!['timestamp'] as Timestamp).toDate()),
+                      (docData['timestamp'] as Timestamp).toDate()),
                   ),
                 const SizedBox(height: 16),
                 Row(
@@ -565,9 +636,9 @@ Widget _buildPropertyCard(int index) {
                       icon: const Icon(Icons.public),
                       label: const Text('View on Blockchain'),
                       onPressed: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Opening blockchain explorer...')),
-                        );
+                        if (widget.onBlockchainRecordSelected != null) {
+                          widget.onBlockchainRecordSelected!(docData);
+                        }
                       },
                     ),
                     ElevatedButton.icon(
@@ -622,7 +693,7 @@ Widget _buildPropertyCard(int index) {
 
                 if (widget.onBackToHome != null) {
                   WidgetsBinding.instance.addPostFrameCallback((_) {
-                    widget.onBackToHome!(); // safe tab switch
+                    widget.onBackToHome!();
                   });
                 } else {
                   Navigator.pop(context);
@@ -630,7 +701,6 @@ Widget _buildPropertyCard(int index) {
               },
             )
           : null,
-          
         title: Container(
           height: 40,
           decoration: BoxDecoration(
