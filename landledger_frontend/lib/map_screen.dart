@@ -70,6 +70,8 @@ class _MapScreenState extends State<MapScreen> {
   Region? currentRegion;
   DocumentSnapshot? _selectedPolygonDoc;
   bool _showPolygonInfo = false;
+  LatLng? _currentCenter;
+
 
   String get _mapboxStyleId {
     if (showSatellite) {
@@ -386,105 +388,115 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
-
   Future<void> savePolygon() async {
-    if (currentPolygonPoints.length < 3 || user == null || !mounted) return;
+  if (currentPolygonPoints.length < 3 || user == null || !mounted) return;
 
-    // Generate short UUID
-    final uuid = Uuid().v4().substring(0, 6).toUpperCase();
-    String llid;
+  // Generate short UUID
+  final uuid = Uuid().v4().substring(0, 6).toUpperCase();
+  String llid;
 
-    // Try geocoding for city name
-    try {
-      final center = _calculateCentroid(currentPolygonPoints);
-      final placemarks = await placemarkFromCoordinates(center.latitude, center.longitude);
-      final city = placemarks.first.locality ?? placemarks.first.subAdministrativeArea ?? 'REGION';
-      llid = 'LL-${city.toUpperCase().replaceAll(' ', '')}-$uuid';
-    } catch (e) {
-      final fallbackDate = DateFormat('yyyyMMdd').format(DateTime.now());
-      llid = 'LL-$fallbackDate-$uuid';
-    }
+  // Try geocoding for city name
+  try {
+    final center = _calculateCentroid(currentPolygonPoints);
+    final placemarks = await placemarkFromCoordinates(center.latitude, center.longitude);
+    final city = placemarks.first.locality ?? placemarks.first.subAdministrativeArea ?? 'REGION';
+    llid = 'LL-${city.toUpperCase().replaceAll(' ', '')}-$uuid';
+  } catch (e) {
+    final fallbackDate = DateFormat('yyyyMMdd').format(DateTime.now());
+    llid = 'LL-$fallbackDate-$uuid';
+  }
 
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Save Region"),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text("Title ID: $llid"),
-            TextField(
-              controller: descriptionController,
-              decoration: const InputDecoration(labelText: "Description"),
-            ),
-            TextField(
-              controller: walletController,
-              decoration: const InputDecoration(labelText: "Wallet Address"),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text("Cancel"),
+  final confirm = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text("Save Region"),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text("Title ID: $llid"),
+          TextField(
+            controller: descriptionController,
+            decoration: const InputDecoration(labelText: "Description"),
           ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text("Save"),
+          TextField(
+            controller: walletController,
+            decoration: const InputDecoration(labelText: "Wallet Address"),
           ),
         ],
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text("Cancel"),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text("Save"),
+        ),
+      ],
+    ),
+  );
+
+  if (confirm != true) return;
+
+  // Ensure polygon is closed before calculating area and saving
+  final closedPolygon = [...currentPolygonPoints];
+  if (closedPolygon.first != closedPolygon.last) {
+    closedPolygon.add(closedPolygon.first);
+  }
+
+  final areaSqKm = calculateArea(closedPolygon);
+
+  try {
+    // Save to Firestore
+    await FirebaseFirestore.instance
+        .collection("users")
+        .doc(user!.uid)
+        .collection("regions")
+        .add({
+          "title_number": llid,
+          "description": descriptionController.text,
+          "wallet_address": walletController.text,
+          "region": widget.regionId,
+          "coordinates": closedPolygon.map((p) => {
+            "lat": p.latitude,
+            "lng": p.longitude,
+          }).toList(),
+          "area_sqkm": areaSqKm,
+          "timestamp": FieldValue.serverTimestamp(),
+        });
+
+    // Save to Blockchain (Node.js API)
+    await saveToBlockchain(
+      llid,
+      closedPolygon,
+      walletController.text,
+      descriptionController.text,
     );
 
-    if (confirm != true) return;
+    debugPrint("✅ Polygon saved successfully with ID: $llid");
 
-    try {
-      // Save to Firestore
-      await FirebaseFirestore.instance
-          .collection("users")
-          .doc(user!.uid)
-          .collection("regions")
-          .add({
-            "title_number": llid,
-            "description": descriptionController.text,
-            "wallet_address": walletController.text,
-            "region": widget.regionId,
-            "coordinates": currentPolygonPoints.map((p) => {
-              "lat": p.latitude,
-              "lng": p.longitude,
-            }).toList(),
-            "area_sqkm": calculateArea(currentPolygonPoints),
-            "timestamp": FieldValue.serverTimestamp(),
-          });
-
-      // Save to Blockchain (Node.js API)
-      await saveToBlockchain(
-        llid,
-        currentPolygonPoints,
-        walletController.text,
-        descriptionController.text,
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Region saved successfully")),
       );
-
-      debugPrint("✅ Polygon saved successfully with ID: $llid");
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Region saved successfully")),
-        );
-        setState(() {
-          currentPolygonPoints = [];
-          isDrawing = false;
-        });
-        _loadUserSavedPolygons();
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Failed to save: $e")),
-        );
-      }
+      setState(() {
+        currentPolygonPoints = [];
+        isDrawing = false;
+      });
+      _loadUserSavedPolygons();
+    }
+  } catch (e) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Failed to save: $e")),
+      );
     }
   }
+}
+
+
+
 
 
   Future<Map<String, dynamic>?> fetchPolygonFromBlockchain(String id) async {
@@ -515,13 +527,12 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
-
-
   Widget buildMapControls() {
   return Stack(
     children: [
       if (_showPolygonInfo && _selectedPolygonDoc != null)
-      buildPolygonInfoCard(),
+        buildPolygonInfoCard(),
+
       // Main floating buttons (zoom, center, draw/save)
       Positioned(
         bottom: 100,
@@ -561,34 +572,62 @@ class _MapScreenState extends State<MapScreen> {
             ),
             const SizedBox(height: 8),
 
-            // Draw or Save toggle
-            currentPolygonPoints.length >= 3 && isDrawing
-                ? Tooltip(
-                    message:
-                        "${calculateArea(currentPolygonPoints).toStringAsFixed(2)} km²",
-                    child: FloatingActionButton(
-                      heroTag: "btn-save",
-                      backgroundColor: Colors.red,
-                      child: const Icon(Icons.save),
-                      onPressed: savePolygon,
-                    ),
-                  )
-                : FloatingActionButton(
-                    heroTag: "btn-draw-toggle",
-                    backgroundColor:
-                        isDrawing ? Colors.red : const Color.fromARGB(255, 2, 76, 63),
-                    child: Icon(isDrawing
-                        ? Icons.close
-                        : Icons.edit_location_alt),
-                    onPressed: () {
-                      setState(() {
-                        isDrawing = !isDrawing;
-                        currentPolygonPoints = [];
-                        selectedPolygon = null;
-                        _showPolygonInfo = false;
-                      });
+            // Draw or Save toggle with area display
+            if (currentPolygonPoints.length >= 3 && isDrawing)
+              Column(
+                children: [
+                  // Area pill with unit switching
+                  Builder(
+                    builder: (context) {
+                      final areaSqM = calculateArea(currentPolygonPoints) * 1e6;
+                      final display = areaSqM >= 100000
+                          ? "${(areaSqM / 1e6).toStringAsFixed(2)} km²"
+                          : "${areaSqM.toStringAsFixed(0)} m²";
+
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 4),
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.75),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          display,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      );
                     },
                   ),
+
+                  // Save button
+                  FloatingActionButton(
+                    heroTag: "btn-save",
+                    backgroundColor: Colors.red,
+                    child: const Icon(Icons.save),
+                    onPressed: savePolygon,
+                  ),
+                ],
+              )
+            else
+              FloatingActionButton(
+                heroTag: "btn-draw-toggle",
+                backgroundColor:
+                    isDrawing ? Colors.red : const Color.fromARGB(255, 2, 76, 63),
+                child: Icon(
+                    isDrawing ? Icons.close : Icons.edit_location_alt),
+                onPressed: () {
+                  setState(() {
+                    isDrawing = !isDrawing;
+                    currentPolygonPoints = [];
+                    selectedPolygon = null;
+                    _showPolygonInfo = false;
+                  });
+                },
+              ),
           ],
         ),
       ),
@@ -616,6 +655,11 @@ class _MapScreenState extends State<MapScreen> {
     ],
   );
 }
+
+
+  
+
+
 
   Widget buildPolygonInfoCard() {
     if (_selectedPolygonDoc == null) return const SizedBox.shrink();
@@ -657,10 +701,21 @@ class _MapScreenState extends State<MapScreen> {
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 8),
-                Text(
-                  'Area: ${_selectedPolygonDoc!['area_sqkm']?.toStringAsFixed(2) ?? '0.00'} km²',
-                  style: Theme.of(context).textTheme.bodyMedium,
+                Builder(
+                  builder: (context) {
+                    final area = _selectedPolygonDoc!['area_sqkm'];
+                    if (area == null || area == 0) return const Text("Area: Unknown");
+
+                    final areaSqM = area * 1e6;
+                    final formatted = areaSqM >= 100000
+                        ? "${(areaSqM / 1e6).toStringAsFixed(2)} km²"
+                        : "${areaSqM.toStringAsFixed(0)} m²";
+
+                    return Text("Area: $formatted");
+                  },
                 ),
+
+
                 const SizedBox(height: 8),
                 if (_selectedPolygonDoc!['timestamp'] != null)
                   Text(
@@ -674,6 +729,20 @@ class _MapScreenState extends State<MapScreen> {
       ),
     );
   }
+
+  
+  Future<String> getCityNameFromLatLng(LatLng latLng) async {
+    try {
+      List<Placemark> placemarks = await placemarkFromCoordinates(latLng.latitude, latLng.longitude);
+      if (placemarks.isNotEmpty) {
+        return placemarks.first.locality ?? placemarks.first.subAdministrativeArea ?? 'Unknown City';
+      }
+    } catch (e) {
+      print("Error during reverse geocoding: $e");
+    }
+    return 'Unknown City';
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -720,13 +789,21 @@ class _MapScreenState extends State<MapScreen> {
 
       body: Stack(
         children: [
-          FlutterMap(
-            mapController: mapController,
-            options: MapOptions(
-              center: currentRegion?.center ?? const LatLng(0, 0),
-              zoom: currentRegion?.zoomLevel ?? 5,
-              onTap: _handleMapTap,
-            ),
+          MouseRegion(
+            cursor: isDrawing ? SystemMouseCursors.precise : SystemMouseCursors.basic,
+            child: FlutterMap(
+              mapController: mapController,
+              options: MapOptions(
+                center: currentRegion?.center ?? const LatLng(0, 0),
+                zoom: currentRegion?.zoomLevel ?? 5,
+                onTap: _handleMapTap,
+                onPositionChanged: (MapPosition position, bool hasGesture) {
+                  setState(() {
+                    _currentCenter = position.center;
+                  });
+                },
+              ),
+
             children: [
               TileLayer(
                 urlTemplate: "https://api.mapbox.com/styles/v1/{id}/tiles/{z}/{x}/{y}?access_token={accessToken}",
@@ -811,9 +888,83 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ],
           ),
+          ),
+          Positioned(
+            top: 16,
+            left: 16,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.7),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: FutureBuilder<String>(
+                future: _currentCenter != null
+                    ? getCityNameFromLatLng(_currentCenter!)
+                    : Future.value('Unknown City'),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Text(
+                      'Loading...',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    );
+                  } else if (snapshot.hasError || !snapshot.hasData) {
+                    return const Text(
+                      'Unknown City',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    );
+                  } else {
+                    return Text(
+                      snapshot.data!,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    );
+                  }
+                },
+              ),
+            ),
+          ),
+
+          Positioned(
+            bottom: 16,
+            left: 16,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.7),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                _currentCenter != null
+                    ? 'Lat: ${_currentCenter!.latitude.toStringAsFixed(5)}, '
+                      'Lng: ${_currentCenter!.longitude.toStringAsFixed(5)}'
+                    : 'Coords unavailable',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ),
+
+
+          
 
           buildMapControls(),
-         
+
+          // Show polygon info card if selected
             // Instructional text while drawing
             if (isDrawing)
               Positioned(

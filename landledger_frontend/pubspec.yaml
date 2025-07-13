@@ -41,6 +41,8 @@ dependencies:
   geocoding: ^2.1.0
   http: ^1.2.1
   webview_flutter: ^4.2.2
+
+
   #fabric-network: ^~2.2.0
   #mapbox_gl: ^0.16.0
 
@@ -65,8 +67,7 @@ flutter:
     - assets/data/nigeria_abj.geojson
     - assets/data/nigeria_lagos.geojson
     - assets/data/kenya.geojson
-    - assets/images/land_logo.png
-    - assets/images/land.png
+    - assets/images/landledger_logo.png
     - assets/flags/cameroon_flag.png
     - assets/flags/ghana_flag.png
     - assets/flags/kenya_flag.png

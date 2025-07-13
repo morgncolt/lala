@@ -305,7 +305,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 height: 48,
                 padding: const EdgeInsets.all(8),
                 child: Image.asset(
-                  'assets/images/land.png',
+                  'assets/images/landledger_logo.png',
                   fit: BoxFit.contain,
                 ),
               ),

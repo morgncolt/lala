@@ -266,6 +266,17 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     }
   }
 
+  String formatArea(dynamic value) {
+    if (value == null || value == 0) return 'Area: Unknown';
+    final areaSqKm = value as num;
+    final areaSqM = areaSqKm * 1e6;
+
+    return areaSqM >= 100000
+        ? '${(areaSqM / 1e6).toStringAsFixed(2)} km²'
+        : '${areaSqM.toStringAsFixed(0)} m²';
+  }
+
+
   Widget _buildPropertyCard(int index) {
     final prop = _userProperties[index];
 
@@ -539,10 +550,11 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                       ),
                       Chip(
                         label: Text(
-                          '${prop['area_sqkm']?.toStringAsFixed(2) ?? '0.00'} km²',
+                          formatArea(prop['area_sqkm']),
                           style: const TextStyle(fontSize: 12),
                         ),
                       ),
+
                     ],
                   ),
                   const SizedBox(height: 8),
