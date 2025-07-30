@@ -41,6 +41,12 @@ dependencies:
   geocoding: ^2.1.0
   http: ^1.2.1
   webview_flutter: ^4.2.2
+  fl_chart: ^0.63.0 # or latest
+  web3dart: ^2.6.0
+  flutter_spinkit: ^5.2.0     # for animated loaders
+  provider: ^6.0.5            # for clean state management
+
+
 
 
   #fabric-network: ^~2.2.0
@@ -54,6 +60,7 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
+    - .env
     - assets/google_logo.png
     - assets/data/regions.geojson
     - assets/maps/osm-2020-02-10-v3.11_africa_cameroon.mbtiles
@@ -73,4 +80,6 @@ flutter:
     - assets/flags/kenya_flag.png
     - assets/flags/nigeria_abj_flag.png
     - assets/flags/nigeria_lagos_flag.png
+    - assets/contract_abi.json
+    
   

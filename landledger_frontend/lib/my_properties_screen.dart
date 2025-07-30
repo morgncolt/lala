@@ -11,6 +11,8 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dashboard_screen.dart';
 import 'landledger_screen.dart';
+import 'package:flutter/services.dart';
+
 
 class MyPropertiesScreen extends StatefulWidget {
   final String regionId;
@@ -276,7 +278,6 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
         : '${areaSqM.toStringAsFixed(0)} m²';
   }
 
-
   Widget _buildPropertyCard(int index) {
     final prop = _userProperties[index];
 
@@ -538,25 +539,73 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        prop['title_number'] ?? 'Untitled Property',
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
+               Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          prop['title_number'] ?? 'Untitled Property',
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
-                      ),
-                      Chip(
-                        label: Text(
-                          formatArea(prop['area_sqkm']),
-                          style: const TextStyle(fontSize: 12),
-                        ),
-                      ),
-
-                    ],
+                        if (prop.containsKey('alias') && prop['alias'] != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade200,
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    prop['alias'],
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.black87,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  GestureDetector(
+                                    onTap: () {
+                                      Clipboard.setData(ClipboardData(text: prop['alias']));
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                          content: Text("Alias copied to clipboard"),
+                                          duration: Duration(seconds: 1),
+                                        ),
+                                      );
+                                    },
+                                    child: const Icon(
+                                      Icons.copy,
+                                      size: 16,
+                                      color: Colors.black45,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
+                  Chip(
+                    label: Text(
+                      formatArea(prop['area_sqkm']),
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+
                   const SizedBox(height: 8),
                   Text(
                     prop['description'] ?? 'No description',
@@ -612,17 +661,68 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
         onTap: () => setState(() => _showPolygonInfo = false),
         child: Card(
           elevation: 8,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      docData['title_number'] ?? 'Property Details',
-                      style: Theme.of(context).textTheme.titleLarge,
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            docData['title_number'] ?? 'Property Details',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          if (docData.containsKey('alias') && docData['alias'] != null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: Colors.grey.shade200,
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      docData['alias'],
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.black87,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    GestureDetector(
+                                      onTap: () {
+                                        Clipboard.setData(
+                                          ClipboardData(text: docData['alias']),
+                                        );
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          const SnackBar(
+                                            content: Text("Alias copied to clipboard"),
+                                            duration: Duration(seconds: 1),
+                                          ),
+                                        );
+                                      },
+                                      child: const Icon(
+                                        Icons.copy,
+                                        size: 16,
+                                        color: Colors.black45,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
                     ),
                     IconButton(
                       icon: const Icon(Icons.close),
@@ -630,15 +730,19 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 12),
                 _buildInfoRow('Description', docData['description']),
                 _buildInfoRow('Wallet', docData['wallet_address']),
-                _buildInfoRow('Area', '${docData['area_sqkm']?.toStringAsFixed(2) ?? '0.00'} km²'),
+                _buildInfoRow(
+                  'Area',
+                  '${docData['area_sqkm']?.toStringAsFixed(2) ?? '0.00'} km²',
+                ),
                 if (docData['timestamp'] != null)
                   _buildInfoRow(
                     'Created',
                     DateFormat('MMMM d, y').format(
-                      (docData['timestamp'] as Timestamp).toDate()),
+                      (docData['timestamp'] as Timestamp).toDate(),
+                    ),
                   ),
                 const SizedBox(height: 16),
                 Row(

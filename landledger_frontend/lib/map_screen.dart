@@ -72,6 +72,38 @@ class _MapScreenState extends State<MapScreen> {
   bool _showPolygonInfo = false;
   LatLng? _currentCenter;
 
+  String generateAliasFromCity(String city) {
+    final cleaned = city.replaceAll(RegExp(r'[^a-zA-Z]'), '').toLowerCase();
+
+    if (cleaned.length <= 4) {
+      final code = _randomCode();
+      return '#${cleaned[0].toUpperCase()}${cleaned.substring(1)}$code';
+    }
+
+    // Naive syllable split: take first letter from consonant-vowel transitions
+    final vowels = 'aeiouy';
+    final buffer = StringBuffer();
+    bool lastWasVowel = false;
+
+    for (int i = 0; i < cleaned.length; i++) {
+      final char = cleaned[i];
+      final isVowel = vowels.contains(char);
+      if (isVowel && !lastWasVowel && i > 0) {
+        buffer.write(cleaned[i - 1]); // consonant before vowel
+      }
+      lastWasVowel = isVowel;
+    }
+
+    final short = buffer.toString().isNotEmpty ? buffer.toString().toUpperCase() : cleaned.substring(0, 2).toUpperCase();
+    return '#$short${_randomCode()}';
+  }
+
+  String _randomCode() {
+    final rand = DateTime.now().microsecondsSinceEpoch;
+    final digits = (1000 + rand % 9000).toString(); // 4-digit number
+    return digits;
+  }
+
 
   String get _mapboxStyleId {
     if (showSatellite) {
@@ -389,53 +421,58 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> savePolygon() async {
-  if (currentPolygonPoints.length < 3 || user == null || !mounted) return;
+    if (currentPolygonPoints.length < 3 || user == null || !mounted) return;
 
-  // Generate short UUID
-  final uuid = Uuid().v4().substring(0, 6).toUpperCase();
-  String llid;
+    String llid;
+    String alias;
 
-  // Try geocoding for city name
-  try {
-    final center = _calculateCentroid(currentPolygonPoints);
-    final placemarks = await placemarkFromCoordinates(center.latitude, center.longitude);
-    final city = placemarks.first.locality ?? placemarks.first.subAdministrativeArea ?? 'REGION';
-    llid = 'LL-${city.toUpperCase().replaceAll(' ', '')}-$uuid';
-  } catch (e) {
-    final fallbackDate = DateFormat('yyyyMMdd').format(DateTime.now());
-    llid = 'LL-$fallbackDate-$uuid';
-  }
+    try {
+      final center = _calculateCentroid(currentPolygonPoints);
+      final placemarks = await placemarkFromCoordinates(center.latitude, center.longitude);
+      final city = placemarks.first.locality ?? placemarks.first.subAdministrativeArea ?? 'Region';
 
-  final confirm = await showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text("Save Region"),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text("Title ID: $llid"),
-          TextField(
-            controller: descriptionController,
-            decoration: const InputDecoration(labelText: "Description"),
+      final shortCity = city.replaceAll(' ', '');
+      final uniquePart = Uuid().v4().substring(0, 6).toUpperCase();
+      llid = 'LL-$shortCity-$uniquePart';
+      alias = generateAliasFromCity(city);
+
+    } catch (e) {
+      final fallback = DateFormat('yyyyMMdd').format(DateTime.now());
+      llid = 'LL-Region-$fallback';
+      alias = '#Plot${_randomCode()}';
+    }
+
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Save Region"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text("Title ID: $llid"),
+            TextField(
+              controller: descriptionController,
+              decoration: const InputDecoration(labelText: "Description"),
+            ),
+            TextField(
+              controller: walletController,
+              decoration: const InputDecoration(labelText: "Wallet Address"),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("Cancel"),
           ),
-          TextField(
-            controller: walletController,
-            decoration: const InputDecoration(labelText: "Wallet Address"),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text("Save"),
           ),
         ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, false),
-          child: const Text("Cancel"),
-        ),
-        ElevatedButton(
-          onPressed: () => Navigator.pop(context, true),
-          child: const Text("Save"),
-        ),
-      ],
-    ),
-  );
+    );
 
   if (confirm != true) return;
 
@@ -450,21 +487,23 @@ class _MapScreenState extends State<MapScreen> {
   try {
     // Save to Firestore
     await FirebaseFirestore.instance
-        .collection("users")
-        .doc(user!.uid)
-        .collection("regions")
-        .add({
-          "title_number": llid,
-          "description": descriptionController.text,
-          "wallet_address": walletController.text,
-          "region": widget.regionId,
-          "coordinates": closedPolygon.map((p) => {
-            "lat": p.latitude,
-            "lng": p.longitude,
-          }).toList(),
-          "area_sqkm": areaSqKm,
-          "timestamp": FieldValue.serverTimestamp(),
-        });
+    .collection("users")
+    .doc(user!.uid)
+    .collection("regions")
+    .add({
+      "title_number": llid,
+      "alias": alias,
+      "description": descriptionController.text,
+      "wallet_address": walletController.text,
+      "region": widget.regionId,
+      "coordinates": closedPolygon.map((p) => {
+        "lat": p.latitude,
+        "lng": p.longitude,
+      }).toList(),
+      "area_sqkm": areaSqKm,
+      "timestamp": FieldValue.serverTimestamp(),
+    });
+    debugPrint("✅ Polygon saved to Firestore with ID: $llid");
 
     // Save to Blockchain (Node.js API)
     await saveToBlockchain(
@@ -494,10 +533,6 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 }
-
-
-
-
 
   Future<Map<String, dynamic>?> fetchPolygonFromBlockchain(String id) async {
     final url = Uri.parse('http://10.0.2.2:4000/api/landledger/$id');
@@ -656,11 +691,6 @@ class _MapScreenState extends State<MapScreen> {
   );
 }
 
-
-  
-
-
-
   Widget buildPolygonInfoCard() {
     if (_selectedPolygonDoc == null) return const SizedBox.shrink();
 
@@ -684,6 +714,18 @@ class _MapScreenState extends State<MapScreen> {
                       _selectedPolygonDoc!['title_number'] ?? 'No Title',
                       style: Theme.of(context).textTheme.titleLarge,
                     ),
+                    if (_selectedPolygonDoc!.data().toString().contains('alias'))
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          _selectedPolygonDoc!['alias'],
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
                     IconButton(
                       icon: const Icon(Icons.close),
                       onPressed: () => setState(() => _showPolygonInfo = false),
@@ -730,7 +772,6 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  
   Future<String> getCityNameFromLatLng(LatLng latLng) async {
     try {
       List<Placemark> placemarks = await placemarkFromCoordinates(latLng.latitude, latLng.longitude);
@@ -742,7 +783,6 @@ class _MapScreenState extends State<MapScreen> {
     }
     return 'Unknown City';
   }
-
 
   @override
   Widget build(BuildContext context) {

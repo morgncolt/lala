@@ -2,12 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:latlong2/latlong.dart';
 
-import 'package:landledger_frontend/home_screen.dart';
 import 'package:landledger_frontend/my_properties_screen.dart';
 import 'package:landledger_frontend/map_screen.dart';
 import 'package:landledger_frontend/landledger_screen.dart';
-import 'package:landledger_frontend/cif_screen.dart';
 import 'package:landledger_frontend/settings_screen.dart';
+
+import 'package:landledger_frontend/home_screen.dart';
+import 'package:landledger_frontend/cif_screen.dart';
+
+
 
 class DashboardScreen extends StatefulWidget {
   final String regionId;

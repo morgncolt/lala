@@ -300,26 +300,11 @@ class _LandledgerScreenState extends State<LandledgerScreen> {
     );
   }
 
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false, // Removes default back button
-        title: const Text('LandLedger'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.pop(context),
-          tooltip: 'Back',
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loadInitialData,
-            tooltip: 'Refresh data',
-          ),
-        ],
-      ),
-
+     
       body: _isLoading
           ? _buildLoadingIndicator()
           : _errorMessage.isNotEmpty

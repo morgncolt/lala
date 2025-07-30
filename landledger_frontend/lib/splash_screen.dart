@@ -10,8 +10,8 @@ class SplashScreen extends StatelessWidget {
       body: Center(
         child: Image.asset(
           'assets/images/landledger_logo.png',
-          width: 200,
-          height: 200,
+          width: 400,
+          height: 400,
         ),
       ),
     );

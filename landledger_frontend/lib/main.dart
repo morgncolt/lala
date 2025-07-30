@@ -1,38 +1,54 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
 import 'dart:async';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:provider/provider.dart';
 
 import 'firebase_options.dart';
 import 'login_screen.dart';
-import 'dashboard_screen.dart';
 import 'theme.dart';
 import 'splash_screen.dart';
+import 'mock_euthereumservice.dart';
 
-void main() {
-  runZonedGuarded(() async {
-    WidgetsFlutterBinding.ensureInitialized();
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
 
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-
-    if (kIsWeb) {
-      await FirebaseAuth.instance.setPersistence(Persistence.LOCAL);
-    }
-
-    runApp(const LandLedgerApp());
-  }, (Object error, StackTrace stackTrace) {
-    debugPrint('🚨 Uncaught zone error: $error');
-    debugPrint('$stackTrace');
-  });
-
+  // Initialize error handlers first
   FlutterError.onError = (FlutterErrorDetails details) {
     FlutterError.presentError(details);
     debugPrint('🚨 Flutter error caught by onError: ${details.exception}');
     debugPrint('${details.stack}');
   };
+
+  await runZonedGuarded(() async {
+    // Load environment variables
+    try {
+      await dotenv.load(fileName: ".env");
+    } catch (e) {
+      debugPrint("⚠️ Could not load .env file: $e");
+      rethrow; // Important to rethrow so we know initialization failed
+    }
+
+    // Initialize Firebase
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+
+    final mockService = MockEthereumService();
+
+    runApp(
+      MultiProvider(
+        providers: [
+          // Provide the already initialized service
+          ChangeNotifierProvider.value(value: mockService),
+        ],
+        child: const LandLedgerApp(),
+      ),
+    );
+  }, (error, stackTrace) {
+    debugPrint('🚨 Uncaught zone error: $error');
+    debugPrint('$stackTrace');
+  });
 }
 
 class LandLedgerApp extends StatelessWidget {
@@ -44,10 +60,7 @@ class LandLedgerApp extends StatelessWidget {
       title: 'LandLedger Africa',
       debugShowCheckedModeBanner: false,
       theme: buildDarkTheme(),
-
-      // ✅ Corrected: only ONE widget in `home:`
       home: const SplashScreenWrapper(),
-
       builder: (context, child) {
         return FocusTraversalGroup(
           policy: WidgetOrderTraversalPolicy(),
@@ -70,7 +83,7 @@ class SplashScreenWrapper extends StatefulWidget {
 }
 
 class _SplashScreenWrapperState extends State<SplashScreenWrapper> {
-  bool _showAuthScreen = false;
+  bool _showLogin = false;
 
   @override
   void initState() {
@@ -81,33 +94,12 @@ class _SplashScreenWrapperState extends State<SplashScreenWrapper> {
   void _startSplashDelay() async {
     await Future.delayed(const Duration(seconds: 5));
     if (mounted) {
-      setState(() => _showAuthScreen = true);
+      setState(() => _showLogin = true);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (!_showAuthScreen) {
-      return const SplashScreen();
-    }
-
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (ctx, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            backgroundColor: Colors.black,
-            body: Center(child: CircularProgressIndicator(color: Color.fromARGB(255, 2, 2, 2))),
-          );
-        }
-        if (snapshot.hasData) {
-          return const DashboardScreen(
-            regionId: 'Cameroon',
-            geojsonPath: 'assets/data/cameroon.geojson',
-          );
-        }
-        return const LoginScreen();
-      },
-    );
+    return _showLogin ? const LoginScreen() : const SplashScreen();
   }
 }
