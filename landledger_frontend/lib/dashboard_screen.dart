@@ -9,6 +9,7 @@ import 'package:landledger_frontend/settings_screen.dart';
 
 import 'package:landledger_frontend/home_screen.dart';
 import 'package:landledger_frontend/cif_screen.dart';
+import 'routes.dart';
 
 
 
@@ -235,6 +236,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             _navigationItems.length,
           ),
+          // In both _buildDesktopSidebar and _buildMobileDrawer methods:
           _buildSidebarItem(
             theme,
             NavigationItem(
@@ -242,6 +244,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
               activeIcon: Icons.logout,
               label: 'Logout',
               builder: (_, __, ___) => Container(),
+              onTap: () async {
+                try {
+                  await FirebaseAuth.instance.signOut();
+                  if (mounted) {
+                    Navigator.of(context).pushNamedAndRemoveUntil(
+                      RouteConstants.login,  // Using the constant from main.dart
+                      (Route<dynamic> route) => false,  // Remove all routes
+                    );
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Logout failed: ${e.toString()}')),
+                    );
+                  }
+                }
+              },
             ),
             _navigationItems.length + 1,
           ),
@@ -283,6 +302,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
               activeIcon: Icons.logout,
               label: 'Logout',
               builder: (_, __, ___) => Container(),
+              onTap: () {
+                FirebaseAuth.instance.signOut();
+                Navigator.pushReplacementNamed(context, '/login');
+              },
             ),
             _navigationItems.length + 1,
           ),
