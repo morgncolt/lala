@@ -1,0 +1,25 @@
+# Node
+node_modules/
+npm-debug.log*
+.yarn/*
+.env
+
+# Go builds
+bin/
+*.out
+
+# Fabric / local artifacts
+*.tar.gz
+*.tgz
+channel-artifacts/
+organizations/
+system-genesis-block/
+log.txt
+
+# OS/Editor
+.DS_Store
+.vscode/
+.idea/
+
+# Wallets / private keys (never commit)
+**/wallet/
