@@ -42,6 +42,14 @@ const WALLET_PATH = expandPath(process.env.WALLET_PATH) ||
             'asset-transfer-basic', 'application-javascript', 'wallet');
 
 /* =========================
+ * Startup sanity warnings (non-fatal)
+ * ========================= */
+(function startupWarnings() {
+  try { if (!fs.existsSync(CCP_PATH)) console.warn(`[WARN] CCP file not found at ${CCP_PATH}`); } catch {}
+  try { if (!fs.existsSync(WALLET_PATH)) console.warn(`[WARN] Wallet dir not found at ${WALLET_PATH}`); } catch {}
+})();
+
+/* =========================
  * Fabric helpers
  * ========================= */
 let cached = /** @type {{gateway: Gateway, walletPath: string}|null} */ (null);
@@ -54,9 +62,9 @@ async function loadCCP() {
 async function ensureIdentityExists(wallet, identityLabel) {
   const id = await wallet.get(identityLabel);
   if (!id) {
-    const msg = `Identity "${identityLabel}" not found in wallet at ${WALLET_PATH}. ` +
-                `Import or enroll the identity before starting the API.`;
+    const msg = `Identity "${identityLabel}" not found in wallet at ${WALLET_PATH}. Import/enroll it first.`;
     const err = new Error(msg);
+    // @ts-ignore
     err.code = 'NO_IDENTITY';
     throw err;
   }
@@ -101,21 +109,92 @@ async function disconnectIfNeeded(gateway, isShared) {
  * ========================= */
 const app = express();
 app.use(cors());
-app.use(morgan('dev'));
+
+// Simple request id for log correlation
+app.use((req, _res, next) => {
+  req.id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,7)}`;
+  next();
+});
+morgan.token('id', (req) => req.id);
+app.use(morgan(':date[iso] [:id] :method :url :status :response-time ms - :res[content-length]'));
 app.use(express.json({ limit: '10mb' }));
 
 // Health endpoints
 app.get('/healthz', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
+
 app.get('/readyz', async (_req, res) => {
+  const checks = { ccpExists: false, walletExists: false, identityOk: false, gatewayOk: false, contractOk: false, error: null };
   try {
-    const { gateway, contract, isShared } = await getGatewayAndContract();
-    // a very light ping (evaluate chaincode name querycommitted is heavier; just ensure we got a contract)
-    await disconnectIfNeeded(gateway, isShared);
-    res.json({ ok: true });
+    checks.ccpExists = fs.existsSync(CCP_PATH);
+    checks.walletExists = fs.existsSync(WALLET_PATH);
+
+    const ccp = await loadCCP();
+    const wallet = await Wallets.newFileSystemWallet(WALLET_PATH);
+    const id = await wallet.get(IDENTITY);
+    checks.identityOk = !!id;
+
+    const gateway = new Gateway();
+    await gateway.connect(ccp, { wallet, identity: IDENTITY, discovery: { enabled: true, asLocalhost: true } });
+    checks.gatewayOk = true;
+
+    const network = await gateway.getNetwork(CHANNEL);
+    const contract = network.getContract(CC_NAME);
+    checks.contractOk = !!contract;
+
+    try { await gateway.disconnect(); } catch {}
+    return res.json({ ok: true, ...checks });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message || String(e) });
+    checks.error = e?.message || String(e);
+    return res.status(500).json({ ok: false, ...checks });
   }
 });
+
+// Debug info (useful in prod)
+app.get('/debug/info', (_req, res) => {
+  res.json({
+    CHANNEL, CC_NAME, IDENTITY, REUSE_GATEWAY,
+    CCP_PATH, WALLET_PATH,
+    cwd: process.cwd(),
+    node: process.version,
+    ts: new Date().toISOString(),
+  });
+});
+
+/* =========================
+ * Helpers
+ * ========================= */
+
+// Safely parse Fabric payloads (empty buffer => fallback)
+function parseJSONOr(buf, fallback) {
+  const s = Buffer.isBuffer(buf) ? buf.toString() : String(buf ?? '');
+  if (!s || !s.trim()) return fallback;
+  try { return JSON.parse(s); }
+  catch (e) {
+    const err = new Error('Failed to parse chaincode JSON payload');
+    // @ts-ignore
+    err.cause = e;
+    throw err;
+  }
+}
+
+// Uniform error response (+ logging)
+function sendError(res, status, e, extra = {}) {
+  const msg = e?.message || String(e);
+  const payload = {
+    error: msg,
+    ...(process.env.NODE_ENV !== 'production' ? { stack: e?.stack } : {}),
+  };
+  try {
+    console.error('API ERROR', {
+      status,
+      msg,
+      stack: e?.stack,
+      at: new Date().toISOString(),
+      ...extra,
+    });
+  } catch {}
+  return res.status(status).json(payload);
+}
 
 // Normalize/validate parcel payload from client
 function buildParcelFromReq(body) {
@@ -129,57 +208,46 @@ function buildParcelFromReq(body) {
     createdAt,
     verified
   } = body || {};
+
+  if (!parcelId || typeof parcelId !== 'string') {
+    const err = new Error('parcelId (string) is required'); err.status = 400; throw err;
+  }
+  if (!owner || typeof owner !== 'string') {
+    const err = new Error('owner (string) is required'); err.status = 400; throw err;
+  }
+
   const out = {
-    parcelId,
-    titleNumber,         // chaincode will default to parcelId if empty
-    owner,
-    coordinates: Array.isArray(coordinates) ? coordinates : undefined,
+    parcelId: parcelId.trim(),
+    titleNumber: (typeof titleNumber === 'string' && titleNumber.trim()) || titleNumber || undefined,
+    owner: owner.trim(),
+    coordinates: Array.isArray(coordinates) ? coordinates : (typeof coordinates === 'object' ? coordinates : undefined),
     areaSqKm: (typeof areaSqKm === 'number') ? areaSqKm : undefined,
-    description,
+    description: (typeof description === 'string' ? description : undefined),
     createdAt: createdAt || new Date().toISOString(),
   };
-  // Optional: allow client to set verified explicitly (bool)
   if (typeof verified === 'boolean') out.verified = verified;
   return out;
-}
-
-// Uniform error response helper
-function sendError(res, status, e) {
-  const msg = e?.message || String(e);
-  return res.status(status).json({ error: msg });
 }
 
 /* =========================
  * Routes
  * ========================= */
 
-// Create/Register
-app.post('/api/landledger/register', async (req, res) => {
-  try {
-    const parcel = buildParcelFromReq(req.body);
-    if (!parcel.parcelId || !parcel.owner) {
-      return res.status(400).json({ error: 'parcelId and owner are required' });
-    }
-    const { gateway, contract, isShared } = await getGatewayAndContract();
-    try {
-      await contract.submitTransaction('RegisterParcel', JSON.stringify(parcel));
-      return res.json({ ok: true, id: parcel.parcelId });
-    } finally { await disconnectIfNeeded(gateway, isShared); }
-  } catch (e) { return sendError(res, 500, e); }
-});
+/**
+ * IMPORTANT: Define /blocks BEFORE "/:id"
+ */
 
-// Read one
-app.get('/api/landledger/:id', async (req, res) => {
+// Blocks (temporary feed) – maps to GetAllParcels
+app.get('/api/landledger/blocks', async (_req, res) => {
   try {
     const { gateway, contract, isShared } = await getGatewayAndContract();
     try {
-      const r = await contract.evaluateTransaction('GetParcel', req.params.id);
-      return res.json(JSON.parse(r.toString()));
+      const r = await contract.evaluateTransaction('GetAllParcels');
+      const out = parseJSONOr(r, []);
+      res.json(Array.isArray(out) ? out : []);
     } finally { await disconnectIfNeeded(gateway, isShared); }
   } catch (e) {
-    // chaincode returns "parcel <id> not found" -> map to 404
-    const status = /not found/i.test(e?.message || '') ? 404 : 500;
-    return sendError(res, status, e);
+    return sendError(res, 404, e, { route: 'GET /api/landledger/blocks' });
   }
 });
 
@@ -189,9 +257,43 @@ app.get('/api/landledger', async (_req, res) => {
     const { gateway, contract, isShared } = await getGatewayAndContract();
     try {
       const r = await contract.evaluateTransaction('GetAllParcels');
-      return res.json(JSON.parse(r.toString()));
+      const out = parseJSONOr(r, []);        // <= defensive
+      return res.json(Array.isArray(out) ? out : []);
     } finally { await disconnectIfNeeded(gateway, isShared); }
-  } catch (e) { return sendError(res, 500, e); }
+  } catch (e) {
+    return sendError(res, 500, e, { route: 'GET /api/landledger' });
+  }
+});
+
+// Create/Register
+app.post('/api/landledger/register', async (req, res) => {
+  try {
+    const parcel = buildParcelFromReq(req.body);
+    const { gateway, contract, isShared } = await getGatewayAndContract();
+    try {
+      await contract.submitTransaction('RegisterParcel', JSON.stringify(parcel));
+      return res.json({ ok: true, id: parcel.parcelId });
+    } finally { await disconnectIfNeeded(gateway, isShared); }
+  } catch (e) {
+    const status = e?.status || 500;
+    return sendError(res, status, e, { route: 'POST /api/landledger/register', body: req.body });
+  }
+});
+
+// Read one
+app.get('/api/landledger/:id', async (req, res) => {
+  try {
+    const { gateway, contract, isShared } = await getGatewayAndContract();
+    try {
+      const r = await contract.evaluateTransaction('GetParcel', req.params.id);
+      const out = parseJSONOr(r, null);
+      if (out == null) return res.status(404).json({ error: `parcel ${req.params.id} not found` });
+      return res.json(out);
+    } finally { await disconnectIfNeeded(gateway, isShared); }
+  } catch (e) {
+    const status = /not found/i.test(e?.message || '') ? 404 : 500;
+    return sendError(res, status, e, { route: 'GET /api/landledger/:id', id: req.params.id });
+  }
 });
 
 // Query by owner
@@ -201,9 +303,9 @@ app.get('/api/landledger/owner/:owner', async (req, res) => {
     const { gateway, contract, isShared } = await getGatewayAndContract();
     try {
       const r = await contract.evaluateTransaction('QueryByOwner', owner);
-      return res.json(JSON.parse(r.toString()));
+      return res.json(parseJSONOr(r, []));
     } finally { await disconnectIfNeeded(gateway, isShared); }
-  } catch (e) { return sendError(res, 500, e); }
+  } catch (e) { return sendError(res, 500, e, { route: 'GET /api/landledger/owner/:owner', owner: req.params.owner }); }
 });
 
 // Query by title
@@ -213,9 +315,9 @@ app.get('/api/landledger/title/:titleNumber', async (req, res) => {
     const { gateway, contract, isShared } = await getGatewayAndContract();
     try {
       const r = await contract.evaluateTransaction('QueryByTitle', titleNumber);
-      return res.json(JSON.parse(r.toString()));
+      return res.json(parseJSONOr(r, []));
     } finally { await disconnectIfNeeded(gateway, isShared); }
-  } catch (e) { return sendError(res, 500, e); }
+  } catch (e) { return sendError(res, 500, e, { route: 'GET /api/landledger/title/:titleNumber', title: req.params.titleNumber }); }
 });
 
 // Transfer owner
@@ -228,7 +330,7 @@ app.post('/api/landledger/transfer', async (req, res) => {
       await contract.submitTransaction('TransferOwner', parcelId, newOwner);
       return res.json({ ok: true, id: parcelId, newOwner });
     } finally { await disconnectIfNeeded(gateway, isShared); }
-  } catch (e) { return sendError(res, 500, e); }
+  } catch (e) { return sendError(res, 500, e, { route: 'POST /api/landledger/transfer', body: req.body }); }
 });
 
 // Update description
@@ -243,7 +345,7 @@ app.patch('/api/landledger/:id/description', async (req, res) => {
       await contract.submitTransaction('UpdateDescription', req.params.id, description);
       return res.json({ ok: true, id: req.params.id });
     } finally { await disconnectIfNeeded(gateway, isShared); }
-  } catch (e) { return sendError(res, 500, e); }
+  } catch (e) { return sendError(res, 500, e, { route: 'PATCH /api/landledger/:id/description', id: req.params.id }); }
 });
 
 // Update geometry (coordinates and/or area)
@@ -260,7 +362,7 @@ app.patch('/api/landledger/:id/geometry', async (req, res) => {
       await contract.submitTransaction('UpdateGeometry', req.params.id, coordsJSON, areaStr);
       return res.json({ ok: true, id: req.params.id });
     } finally { await disconnectIfNeeded(gateway, isShared); }
-  } catch (e) { return sendError(res, 500, e); }
+  } catch (e) { return sendError(res, 500, e, { route: 'PATCH /api/landledger/:id/geometry', id: req.params.id }); }
 });
 
 // Delete parcel
@@ -271,7 +373,7 @@ app.delete('/api/landledger/:id', async (req, res) => {
       await contract.submitTransaction('DeleteParcel', req.params.id);
       return res.json({ ok: true, id: req.params.id, deleted: true });
     } finally { await disconnectIfNeeded(gateway, isShared); }
-  } catch (e) { return sendError(res, 500, e); }
+  } catch (e) { return sendError(res, 500, e, { route: 'DELETE /api/landledger/:id', id: req.params.id }); }
 });
 
 // History
@@ -280,9 +382,17 @@ app.get('/api/landledger/:id/history', async (req, res) => {
     const { gateway, contract, isShared } = await getGatewayAndContract();
     try {
       const r = await contract.evaluateTransaction('GetHistory', req.params.id);
-      return res.json(JSON.parse(r.toString()));
+      return res.json(parseJSONOr(r, []));
     } finally { await disconnectIfNeeded(gateway, isShared); }
-  } catch (e) { return sendError(res, 500, e); }
+  } catch (e) { return sendError(res, 500, e, { route: 'GET /api/landledger/:id/history', id: req.params.id }); }
+});
+
+/* =========================
+ * Fallback error handler (safety net)
+ * ========================= */
+app.use((err, req, res, _next) => {
+  const status = err?.status || 500;
+  return sendError(res, status, err, { route: `${req.method} ${req.originalUrl}`, id: req.id });
 });
 
 /* =========================
