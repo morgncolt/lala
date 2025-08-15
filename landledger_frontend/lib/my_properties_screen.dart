@@ -1,23 +1,22 @@
 import 'dart:async';
-import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:latlong2/latlong.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:flutter_map_cancellable_tile_provider/flutter_map_cancellable_tile_provider.dart';
-import 'package:intl/intl.dart';
-import 'map_screen.dart';
-import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'dashboard_screen.dart';
-import 'landledger_screen.dart';
-import 'package:flutter/services.dart';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart' as gmap;
+import 'package:http/http.dart' as http;
+import 'package:intl/intl.dart';
+import 'package:latlong2/latlong.dart' as ll;
+
+import 'landledger_screen.dart';
+import 'map_screen.dart';
 
 class MyPropertiesScreen extends StatefulWidget {
   final String regionId;
   final String? geojsonPath;
-  final List<LatLng>? highlightPolygon;
+  final List<ll.LatLng>? highlightPolygon;
   final VoidCallback? onBackToHome;
   final void Function(String regionId, String geojsonPath)? onRegionSelected;
   final bool showBackArrow;
@@ -40,7 +39,7 @@ class MyPropertiesScreen extends StatefulWidget {
 
 class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
   final List<Map<String, dynamic>> _userProperties = [];
-  final List<List<LatLng>> _polygonPointsList = [];
+  final List<List<ll.LatLng>> _polygonPointsList = [];
   final List<String> _documentIds = [];
   bool _isLoading = false;
   bool _hasMore = true;
@@ -48,15 +47,34 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
   final ScrollController _scrollController = ScrollController();
   final User? _user = FirebaseAuth.instance.currentUser;
   Timer? _debounce;
-  List<LatLng>? _selectedPolygon;
+  List<ll.LatLng>? _selectedPolygon;
   bool _showPolygonInfo = false;
-  DocumentSnapshot? _selectedPolygonDoc;
+
+  // Store the selected property's data as a Map (not a DocumentSnapshot)
+  Map<String, dynamic>? _selectedPolygonDoc;
+
+  // Per-card view state
   final Map<int, bool> _satelliteViewMap = {};
   final Map<int, double> _zoomLevelMap = {};
-  final Map<int, LatLng?> _centerMap = {};
-  final Map<int, MapController> _mapControllers = {};
+  final Map<int, ll.LatLng?> _centerMap = {};
   String _searchQuery = '';
   Timer? _searchDebounce;
+
+  // Google Map controllers per item
+  final Map<int, gmap.GoogleMapController?> _gControllers = {};
+
+  gmap.LatLng _g(ll.LatLng p) => gmap.LatLng(p.latitude, p.longitude);
+  List<gmap.LatLng> _gList(List<ll.LatLng> pts) => pts.map(_g).toList();
+
+  ll.LatLng _centroid(List<ll.LatLng> pts) {
+    if (pts.isEmpty) return const ll.LatLng(0, 0);
+    double lat = 0, lng = 0;
+    for (final p in pts) {
+      lat += p.latitude;
+      lng += p.longitude;
+    }
+    return ll.LatLng(lat / pts.length, lng / pts.length);
+  }
 
   @override
   void initState() {
@@ -77,16 +95,13 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     final url = Uri.parse('http://10.0.2.2:4000/api/landledger/$parcelId');
     try {
       final response = await http.get(url).timeout(const Duration(seconds: 5));
-      
+
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        
-        // Ensure data matches expected format
         if (data['title_number'] == null || data['coordinates'] == null) {
           debugPrint('⚠️ Invalid record format received');
           return null;
         }
-        
         return data;
       } else if (response.statusCode == 404) {
         debugPrint('🔍 Land record $parcelId not found on blockchain');
@@ -116,16 +131,17 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
 
   List<Map<String, dynamic>> get _filteredProperties {
     if (_searchQuery.isEmpty) return _userProperties;
+    final q = _searchQuery.toLowerCase();
     return _userProperties.where((prop) {
-      return (prop['title_number']?.toString().toLowerCase().contains(_searchQuery) ?? false) ||
-          (prop['description']?.toString().toLowerCase().contains(_searchQuery) ?? false) ||
-          (prop['wallet_address']?.toString().toLowerCase().contains(_searchQuery) ?? false);
+      return (prop['title_number']?.toString().toLowerCase().contains(q) ?? false) ||
+          (prop['description']?.toString().toLowerCase().contains(q) ?? false) ||
+          (prop['wallet_address']?.toString().toLowerCase().contains(q) ?? false);
     }).toList();
   }
 
   Future<void> _fetchProperties() async {
     if (_user == null || _isLoading || !_hasMore) return;
-    
+
     setState(() => _isLoading = true);
 
     try {
@@ -142,17 +158,17 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
       }
 
       final snapshot = await query.get();
-      
+
       if (snapshot.docs.isNotEmpty) {
         final props = <Map<String, dynamic>>[];
-        final polys = <List<LatLng>>[];
+        final polys = <List<ll.LatLng>>[];
         final ids = <String>[];
 
         for (var doc in snapshot.docs) {
           final data = doc.data();
           final coords = (data['coordinates'] as List)
               .where((c) => c is Map && c['lat'] != null && c['lng'] != null)
-              .map((c) => LatLng(
+              .map((c) => ll.LatLng(
                     (c['lat'] as num).toDouble(),
                     (c['lng'] as num).toDouble(),
                   ))
@@ -161,9 +177,8 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
           props.add(data);
           polys.add(coords);
           ids.add(doc.id);
-          
+
           final index = _userProperties.length + props.length - 1;
-          _mapControllers[index] = MapController();
           _satelliteViewMap[index] = false;
           _zoomLevelMap[index] = 15.0;
           _centerMap[index] = null;
@@ -193,12 +208,12 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
   void _handlePolygonTap(int index) {
     setState(() {
       _selectedPolygon = _polygonPointsList[index];
-      _selectedPolygonDoc = _userProperties[index] as DocumentSnapshot?;
+      _selectedPolygonDoc = _userProperties[index]; // store the map data
       _showPolygonInfo = true;
     });
   }
 
-  void _handleMapTap(int index, LatLng point) {
+  void _handleMapTap(int index, ll.LatLng point) {
     setState(() {
       if (_centerMap[index] == null) {
         _centerMap[index] = point;
@@ -208,6 +223,12 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
         _zoomLevelMap[index] = 15.0;
       }
     });
+
+    final target = _centerMap[index] ?? point;
+    final z = (_zoomLevelMap[index] ?? 15.0).toDouble();
+    _gControllers[index]?.animateCamera(
+      gmap.CameraUpdate.newLatLngZoom(_g(target), z),
+    );
   }
 
   Future<void> _deleteProperty(int index) async {
@@ -233,7 +254,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     );
 
     if (confirm != true) return;
-    
+
     try {
       await FirebaseFirestore.instance
           .collection('users')
@@ -243,7 +264,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
           .delete();
 
       if (!mounted) return;
-      
+
       setState(() {
         _userProperties.removeAt(index);
         _polygonPointsList.removeAt(index);
@@ -251,6 +272,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
         _satelliteViewMap.remove(index);
         _zoomLevelMap.remove(index);
         _centerMap.remove(index);
+        _gControllers.remove(index);
       });
 
       if (mounted) {
@@ -278,57 +300,23 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
         : '${areaSqM.toStringAsFixed(0)} m²';
   }
 
-  Widget _buildPropertyCard(int index) {
-    final prop = _userProperties[index];
+  Widget _buildPropertyCard(int originalIndex) {
+    final prop = _userProperties[originalIndex];
+    final poly = _polygonPointsList[originalIndex];
 
-      // Handle both Firestore and blockchain data formats
+    if (poly.isEmpty) return const SizedBox.shrink();
+
+    // Handle both Firestore and potential blockchain formats (kept for compatibility)
     final titleNumber = prop['title_number'] ?? prop['parcelId'] ?? 'Untitled Property';
-    final owner = prop['owner'] ?? prop['ownerId'] ?? 'Unknown Owner';
-    
-    // Parse coordinates from either format
-    List<LatLng> coordinates = [];
-    if (prop['coordinates'] is List) {
-      coordinates = (prop['coordinates'] as List)
-          .where((c) => c is Map && c['lat'] != null && c['lng'] != null)
-          .map((c) => LatLng(
-                (c['lat'] as num).toDouble(),
-                (c['lng'] as num).toDouble(),
-              ))
-          .toList();
-    } else if (prop['Polygon'] is List) {
-      coordinates = (prop['Polygon'] as List)
-          .where((point) => point is List && point.length == 2)
-          .map((point) => LatLng(
-                (point[0] as num).toDouble(),
-                (point[1] as num).toDouble(),
-              ))
-          .toList();
-    }
-    final poly = _polygonPointsList[index];
-
-    if (poly.isEmpty) {
-      return const SizedBox.shrink();
-    }
 
     final isSelected = _selectedPolygon == poly;
-    final isSatellite = _satelliteViewMap[index] ?? false;
-    final zoomLevel = _zoomLevelMap[index] ?? 15.0;
+    final isSatellite = _satelliteViewMap[originalIndex] ?? false;
+    final zoomLevel = _zoomLevelMap[originalIndex] ?? 15.0;
 
-    final center = _centerMap[index] ?? (poly.isNotEmpty
-      ? LatLngBounds.fromPoints(poly).center
-      : const LatLng(0.0, 0.0));
-
-    _mapControllers.putIfAbsent(index, () => MapController());
-    final controller = _mapControllers[index]!;
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      controller.move(center, zoomLevel);
-    });
-
-    final altTitleNumber = prop['title_number'] ?? 'Untitled Property'; // ✅ Renamed
+    final center = _centerMap[originalIndex] ?? _centroid(poly);
 
     return GestureDetector(
-      onTap: () => _handlePolygonTap(index),
+      onTap: () => _handlePolygonTap(originalIndex),
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
@@ -350,138 +338,104 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                   SizedBox(
                     height: 180,
                     child: GestureDetector(
-                      onTap: () => _handleMapTap(index, center),
-                      child: FlutterMap(
-                        mapController: _mapControllers[index],
-                        options: MapOptions(
-                          center: center,
-                          zoom: zoomLevel,
-                          interactiveFlags: InteractiveFlag.none,
+                      onTap: () => _handleMapTap(originalIndex, center),
+                      child: gmap.GoogleMap(
+                        mapType: isSatellite ? gmap.MapType.hybrid : gmap.MapType.normal,
+                        initialCameraPosition: gmap.CameraPosition(
+                          target: _g(center),
+                          zoom: zoomLevel.toDouble(),
                         ),
-                        children: [
-                          TileLayer(
-                            urlTemplate: "https://api.mapbox.com/styles/v1/{id}/tiles/256/{z}/{x}/{y}@2x?access_token={accessToken}",
-                            additionalOptions: {
-                              'accessToken': 'pk.eyJ1IjoibW9yZ25jb2x0IiwiYSI6ImNtYng2eHI0ZjB3cjQybW9zNXZhaDJqanYifQ.0qZEU6MBjiTZiUDPs6JyoQ',
-                              'id': isSatellite 
-                                  ? 'mapbox/satellite-streets-v12' 
-                                  : 'mapbox/outdoors-v12',
-                            },
-                            tileProvider: CancellableNetworkTileProvider(),
-                          ),
-                          if (isSelected)
-                            ColorFiltered(
-                              colorFilter: ColorFilter.mode(
-                                Colors.black.withOpacity(0.5),
-                                BlendMode.darken,
-                              ),
-                              child: TileLayer(
-                                urlTemplate: "https://api.mapbox.com/styles/v1/{id}/tiles/256/{z}/{x}/{y}@2x?access_token={accessToken}",
-                                additionalOptions: {
-                                  'accessToken': 'pk.eyJ1IjoibW9yZ25jb2x0IiwiYSI6ImNtYng2eHI0ZjB3cjQybW9zNXZhaDJqanYifQ.0qZEU6MBjiTZiUDPs6JyoQ',
-                                  'id': isSatellite 
-                                      ? 'mapbox/satellite-streets-v12' 
-                                      : 'mapbox/outdoors-v12',
-                                },
-                              ),
+                        zoomGesturesEnabled: false,
+                        scrollGesturesEnabled: false,
+                        rotateGesturesEnabled: false,
+                        tiltGesturesEnabled: false,
+                        myLocationEnabled: false,
+                        myLocationButtonEnabled: false,
+                        zoomControlsEnabled: true,
+                        mapToolbarEnabled: false,
+                        onMapCreated: (ctrl) async {
+                          _gControllers[originalIndex] = ctrl;
+                          await ctrl.moveCamera(
+                            gmap.CameraUpdate.newCameraPosition(
+                              gmap.CameraPosition(target: _g(center), zoom: zoomLevel.toDouble()),
                             ),
-                          PolygonLayer(
-                            polygons: [
-                              Polygon(
-                                points: poly,
-                                color: isSelected
-                                    ? Colors.white.withOpacity(0.7)
-                                    : Colors.blue.withOpacity(0.3),
-                                borderColor: isSelected ? Colors.white : Colors.blue,
-                                borderStrokeWidth: isSelected ? 3 : 2,
-                                isFilled: true,
-                              ),
-                            ],
+                          );
+                        },
+                        polygons: {
+                          gmap.Polygon(
+                            polygonId: gmap.PolygonId('prop_$originalIndex'),
+                            points: _gList(poly),
+                            strokeWidth: isSelected ? 3 : 2,
+                            strokeColor: isSelected ? Colors.white : Colors.blue,
+                            fillColor: (isSelected ? Colors.white : Colors.blue)
+                                .withOpacity(isSelected ? 0.7 : 0.3),
+                            consumeTapEvents: false,
                           ),
-                        ],
+                        },
+                        onTap: (_) {
+                          _handleMapTap(originalIndex, center);
+                          final ctrl = _gControllers[originalIndex];
+                          if (ctrl != null) {
+                            final target = _centerMap[originalIndex] ?? center;
+                            final z = (_zoomLevelMap[originalIndex] ?? 15.0).toDouble();
+                            ctrl.animateCamera(gmap.CameraUpdate.newLatLngZoom(_g(target), z));
+                          }
+                        },
                       ),
                     ),
                   ),
-                  Positioned(
-                    bottom: 8,
-                    right: 8,
-                    child: FloatingActionButton(
-                      mini: true,
-                      heroTag: 'fullscreen_$index',
-                      child: const Icon(Icons.fullscreen),
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => MapScreen(
-                              regionId: widget.regionId,
-                              geojsonPath: widget.geojsonPath,
-                              highlightPolygon: _polygonPointsList[index],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
+                  
+      
                   Positioned(
                     top: 8,
                     right: 8,
                     child: PopupMenuButton<String>(
                       icon: const Icon(Icons.more_vert, color: Color.fromARGB(255, 10, 10, 10)),
                       itemBuilder: (context) => [
-                        PopupMenuItem(
+                        const PopupMenuItem(
                           value: 'view_blockchain',
-                          child: const Text('View on Blockchain'),
+                          child: Text('View on Blockchain'),
                         ),
-                        PopupMenuItem(
+                        const PopupMenuItem(
                           value: 'land_deed',
-                          child: const Text('View Land Deed'),
+                          child: Text('View Land Deed'),
                         ),
                         PopupMenuItem(
                           value: 'toggle_view',
                           child: Text(isSatellite ? 'Normal View' : 'Satellite View'),
                         ),
                         const PopupMenuItem(
-                          value: 'zoom_in',
-                          child: Text('Zoom In'),
-                        ),
-                        const PopupMenuItem(
-                          value: 'zoom_out',
-                          child: Text('Zoom Out'),
-                        ),
+                          value: 'open_fullscreen', 
+                          child: Text('Open Fullscreen Map')),
                         const PopupMenuDivider(),
-                        PopupMenuItem(
+                        const PopupMenuItem(
                           value: 'delete',
-                          child: const Text('Delete Property', style: TextStyle(color: Colors.red)),
+                          child: Text('Delete Property', style: TextStyle(color: Colors.red)),
                         ),
                       ],
                       onSelected: (value) async {
                         switch (value) {
                           case 'view_blockchain':
-                            final parcelId = prop['parcelId'] ?? prop['id'] ?? prop['title_number']?.replaceFirst('TN-', 'LL-');
-
-                            if (titleNumber == null || titleNumber.isEmpty) {
+                            final parcelId = prop['parcelId'] ??
+                                prop['id'] ??
+                                (prop['title_number']?.toString().replaceFirst('TN-', 'LL-'));
+                            if (parcelId == null || parcelId.isEmpty) {
+                              if (!mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('No title number available')),
+                                const SnackBar(content: Text('No parcel ID available')),
                               );
                               return;
                             }
-                            
                             try {
                               final url = Uri.parse('http://10.0.2.2:4000/api/landledger/parcel/$parcelId');
-
                               final response = await http.get(url).timeout(const Duration(seconds: 5));
-                              
                               if (response.statusCode == 200) {
                                 final data = jsonDecode(response.body);
                                 if (!mounted) return;
-                                
                                 Navigator.push(
                                   context,
                                   MaterialPageRoute(
-                                    builder: (_) => LandledgerScreen(
-                                      selectedRecord: data,
-                                    ),
+                                    builder: (_) => LandledgerScreen(selectedRecord: data),
                                   ),
                                 );
                               } else {
@@ -493,35 +447,38 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                             } on TimeoutException {
                               if (!mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Request timeout - server took too long to respond')),
+                                const SnackBar(content: Text('Request timeout')),
                               );
                             } catch (e) {
                               if (!mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('Error: ${e.toString()}')),
+                                SnackBar(content: Text('Error: $e')),
                               );
                             }
                             break;
 
                           case 'delete':
-                            await _deleteProperty(index);
+                            await _deleteProperty(originalIndex);
                             break;
+
                           case 'toggle_view':
                             setState(() {
-                              _satelliteViewMap[index] = !(_satelliteViewMap[index] ?? false);
+                              _satelliteViewMap[originalIndex] =
+                                  !(_satelliteViewMap[originalIndex] ?? false);
                             });
                             break;
-                          case 'zoom_in':
-                            setState(() {
-                              _zoomLevelMap[index] = (_zoomLevelMap[index] ?? 15.0) + 1;
-                              _mapControllers[index]?.move(center, _zoomLevelMap[index]!);
-                            });
-                            break;
-                          case 'zoom_out':
-                            setState(() {
-                              _zoomLevelMap[index] = (_zoomLevelMap[index] ?? 15.0) - 1;
-                              _mapControllers[index]?.move(center, _zoomLevelMap[index]!);
-                            });
+
+                          case 'open_fullscreen':
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => MapScreen(
+                                  regionId: widget.regionId,
+                                  geojsonPath: widget.geojsonPath,
+                                  highlightPolygon: _polygonPointsList[originalIndex],
+                                ),
+                              ),
+                            );
                             break;
                         }
                       },
@@ -539,73 +496,74 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-               Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          prop['title_number'] ?? 'Untitled Property',
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        if (prop.containsKey('alias') && prop['alias'] != null)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: Colors.grey.shade200,
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    prop['alias'],
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.black87,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 6),
-                                  GestureDetector(
-                                    onTap: () {
-                                      Clipboard.setData(ClipboardData(text: prop['alias']));
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(
-                                          content: Text("Alias copied to clipboard"),
-                                          duration: Duration(seconds: 1),
-                                        ),
-                                      );
-                                    },
-                                    child: const Icon(
-                                      Icons.copy,
-                                      size: 16,
-                                      color: Colors.black45,
-                                    ),
-                                  ),
-                                ],
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              titleNumber,
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
                               ),
                             ),
-                          ),
-                      ],
-                    ),
+                            if (prop.containsKey('alias') && prop['alias'] != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Container(
+                                  padding:
+                                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: Colors.grey.shade200,
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        prop['alias'],
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.black87,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      GestureDetector(
+                                        onTap: () {
+                                          Clipboard.setData(
+                                              ClipboardData(text: prop['alias']));
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(
+                                              content: Text("Alias copied to clipboard"),
+                                              duration: Duration(seconds: 1),
+                                            ),
+                                          );
+                                        },
+                                        child: const Icon(
+                                          Icons.copy,
+                                          size: 16,
+                                          color: Colors.black45,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                      Chip(
+                        label: Text(
+                          formatArea(prop['area_sqkm']),
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ],
                   ),
-                  Chip(
-                    label: Text(
-                      formatArea(prop['area_sqkm']),
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                  ),
-                ],
-              ),
-
                   const SizedBox(height: 8),
                   Text(
                     prop['description'] ?? 'No description',
@@ -634,7 +592,8 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                         const SizedBox(width: 4),
                         Text(
                           DateFormat('MMM d, y').format(
-                            (prop['timestamp'] as Timestamp).toDate()),
+                            (prop['timestamp'] as Timestamp).toDate(),
+                          ),
                           style: const TextStyle(fontSize: 12),
                         ),
                       ],
@@ -651,7 +610,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
   Widget _buildPolygonInfoCard() {
     if (_selectedPolygonDoc == null || !_showPolygonInfo) return const SizedBox();
 
-    final docData = _selectedPolygonDoc!.data() as Map<String, dynamic>? ?? {};
+    final docData = _selectedPolygonDoc!;
 
     return Positioned(
       bottom: 16,
@@ -682,7 +641,8 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                             Padding(
                               padding: const EdgeInsets.only(top: 4),
                               child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                                 decoration: BoxDecoration(
                                   color: Colors.grey.shade200,
                                   borderRadius: BorderRadius.circular(20),
@@ -735,7 +695,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                 _buildInfoRow('Wallet', docData['wallet_address']),
                 _buildInfoRow(
                   'Area',
-                  '${docData['area_sqkm']?.toStringAsFixed(2) ?? '0.00'} km²',
+                  '${(docData['area_sqkm'] is num) ? (docData['area_sqkm'] as num).toStringAsFixed(2) : '0.00'} km²',
                 ),
                 if (docData['timestamp'] != null)
                   _buildInfoRow(
@@ -799,24 +759,26 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final displayed = _filteredProperties;
+
     return Scaffold(
       appBar: AppBar(
-        leading: widget.showBackArrow 
-          ? IconButton(
-              icon: const Icon(Icons.arrow_back),
-              onPressed: () {
-                debugPrint('🔙 Back button pressed in MyPropertiesScreen');
+        leading: widget.showBackArrow
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () {
+                  debugPrint('🔙 Back button pressed in MyPropertiesScreen');
 
-                if (widget.onBackToHome != null) {
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    widget.onBackToHome!();
-                  });
-                } else {
-                  Navigator.pop(context);
-                }
-              },
-            )
-          : null,
+                  if (widget.onBackToHome != null) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      widget.onBackToHome!();
+                    });
+                  } else {
+                    Navigator.pop(context);
+                  }
+                },
+              )
+            : null,
         title: Container(
           height: 40,
           decoration: BoxDecoration(
@@ -824,11 +786,11 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
             borderRadius: BorderRadius.circular(20),
           ),
           child: TextField(
-            decoration: InputDecoration(
-              prefixIcon: const Icon(Icons.search, size: 20),
+            decoration: const InputDecoration(
+              prefixIcon: Icon(Icons.search, size: 20),
               hintText: 'Search properties...',
               border: InputBorder.none,
-              contentPadding: const EdgeInsets.symmetric(vertical: 8),
+              contentPadding: EdgeInsets.symmetric(vertical: 8),
             ),
             onChanged: (value) {
               if (_searchDebounce?.isActive ?? false) _searchDebounce!.cancel();
@@ -843,23 +805,11 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
         actions: [
           PopupMenuButton<String>(
             icon: const Icon(Icons.filter_alt),
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'newest',
-                child: Text('Newest First'),
-              ),
-              const PopupMenuItem(
-                value: 'oldest',
-                child: Text('Oldest First'),
-              ),
-              const PopupMenuItem(
-                value: 'largest',
-                child: Text('Largest Area'),
-              ),
-              const PopupMenuItem(
-                value: 'smallest',
-                child: Text('Smallest Area'),
-              ),
+            itemBuilder: (context) => const [
+              PopupMenuItem(value: 'newest', child: Text('Newest First')),
+              PopupMenuItem(value: 'oldest', child: Text('Oldest First')),
+              PopupMenuItem(value: 'largest', child: Text('Largest Area')),
+              PopupMenuItem(value: 'smallest', child: Text('Smallest Area')),
             ],
             onSelected: (value) {
               setState(() {
@@ -871,10 +821,12 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                     _userProperties.sort((a, b) => a['timestamp'].compareTo(b['timestamp']));
                     break;
                   case 'largest':
-                    _userProperties.sort((a, b) => (b['area_sqkm'] ?? 0).compareTo(a['area_sqkm'] ?? 0));
+                    _userProperties
+                        .sort((a, b) => (b['area_sqkm'] ?? 0).compareTo(a['area_sqkm'] ?? 0));
                     break;
                   case 'smallest':
-                    _userProperties.sort((a, b) => (a['area_sqkm'] ?? 0).compareTo(b['area_sqkm'] ?? 0));
+                    _userProperties
+                        .sort((a, b) => (a['area_sqkm'] ?? 0).compareTo(b['area_sqkm'] ?? 0));
                     break;
                 }
               });
@@ -903,7 +855,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
       ),
       body: Stack(
         children: [
-          if (_filteredProperties.isEmpty && !_isLoading)
+          if (displayed.isEmpty && !_isLoading)
             Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -954,15 +906,19 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
               child: ListView.builder(
                 controller: _scrollController,
                 padding: const EdgeInsets.only(bottom: 80),
-                itemCount: _filteredProperties.length + (_hasMore ? 1 : 0),
-                itemBuilder: (context, index) {
-                  if (index == _filteredProperties.length) {
+                itemCount: displayed.length + (_hasMore ? 1 : 0),
+                itemBuilder: (context, idx) {
+                  if (idx == displayed.length) {
                     return const Padding(
                       padding: EdgeInsets.all(16),
                       child: Center(child: CircularProgressIndicator()),
                     );
                   }
-                  return _buildPropertyCard(index);
+                  // Map filtered item to its original index so parallel arrays stay in sync
+                  final prop = displayed[idx];
+                  final originalIndex = _userProperties.indexOf(prop);
+                  if (originalIndex < 0) return const SizedBox.shrink();
+                  return _buildPropertyCard(originalIndex);
                 },
               ),
             ),

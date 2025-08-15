@@ -43,8 +43,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       {"id": "cameroon", "label": "Cameroon", "path": "assets/data/cameroon.geojson"},
       {"id": "ghana", "label": "Ghana", "path": "assets/data/ghana.geojson"},
       {"id": "kenya", "label": "Kenya", "path": "assets/data/kenya.geojson"},
-      {"id": "nigeria_abj", "label": "Nigeria (Abuja)", "path": "assets/data/nigeria_abj.geojson"},
-      {"id": "nigeria_lagos", "label": "Nigeria (Lagos)", "path": "assets/data/nigeria_lagos.geojson"},
+      {"id": "nigeria", "label": "Nigeria", "path": "assets/data/nigeria.geojson"},
     ];
 
     final incoming = widget.initialSelectedId ?? widget.currentRegionId;

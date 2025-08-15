@@ -62,7 +62,6 @@ flutter:
   assets:
     - .env
     - assets/google_logo.png
-    - assets/data/regions.geojson
     - assets/maps/osm-2020-02-10-v3.11_africa_cameroon.mbtiles
     - assets/maps/osm-2020-02-10-v3.11_africa_ghana.mbtiles
     - assets/maps/osm-2020-02-10-v3.11_nigeria_abuja.mbtiles
@@ -71,15 +70,14 @@ flutter:
     - assets/maps/osm-2020-02-10-v3.11_kenya_nairobi.mbtiles
     - assets/data/ghana.geojson
     - assets/data/cameroon.geojson
-    - assets/data/nigeria_abj.geojson
-    - assets/data/nigeria_lagos.geojson
+    - assets/data/nigeria.geojson
     - assets/data/kenya.geojson
     - assets/images/landledger_logo.png
     - assets/flags/cameroon_flag.png
     - assets/flags/ghana_flag.png
     - assets/flags/kenya_flag.png
-    - assets/flags/nigeria_abj_flag.png
-    - assets/flags/nigeria_lagos_flag.png
+    - assets/flags/nigeria_flag.png
     - assets/contract_abi.json
+    
     
   

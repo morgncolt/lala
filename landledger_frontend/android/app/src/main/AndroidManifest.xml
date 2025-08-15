@@ -1,6 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.landledger_frontend">
 
+    <!-- Permissions (top-level, not inside <application>) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
     <application
         android:name="${applicationName}"
         android:label="landledger_frontend"
@@ -8,8 +14,12 @@
         android:usesCleartextTraffic="true"
         android:networkSecurityConfig="@xml/network_security_config">
 
+        <!-- ✅ Google Maps API key -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="AIzaSyBXK2rKSdBuWXUXgvdZqnm_LP3x5e3VgDQ" />
 
-        <!-- Mapbox Access Token -->
+        <!-- ✅ Mapbox access token -->
         <meta-data
             android:name="com.mapbox.token"
             android:value="pk.eyJ1IjoibW9yZ25jb2x0IiwiYSI6ImNtYng2eHI0ZjB3cjQybW9zNXZhaDJqanYifQ.0qZEU6MBjiTZiUDPs6JyoQ" />
@@ -40,7 +50,7 @@
         </activity>
     </application>
 
-    <!-- Required to query activities that can process text -->
+    <!-- Optional: query text processors -->
     <queries>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT" />
