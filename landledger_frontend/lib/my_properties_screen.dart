@@ -38,30 +38,33 @@ class MyPropertiesScreen extends StatefulWidget {
 }
 
 class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
+  // Canonicalize region IDs the same way MapScreen does
+  String canonicalizeRegionId(String raw) =>
+      raw.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '-');
+
   final List<Map<String, dynamic>> _userProperties = [];
   final List<List<ll.LatLng>> _polygonPointsList = [];
   final List<String> _documentIds = [];
+
   bool _isLoading = false;
-  bool _hasMore = true;
-  DocumentSnapshot? _lastDocument;
+  bool _hasMore = true; // applies to legacy listing pagination
+  DocumentSnapshot? _lastDocument; // legacy paging
   final ScrollController _scrollController = ScrollController();
   final User? _user = FirebaseAuth.instance.currentUser;
   Timer? _debounce;
+
   List<ll.LatLng>? _selectedPolygon;
   bool _showPolygonInfo = false;
-
-  // Store the selected property's data as a Map (not a DocumentSnapshot)
   Map<String, dynamic>? _selectedPolygonDoc;
 
-  // Per-card view state
-  final Map<int, bool> _satelliteViewMap = {};
-  final Map<int, double> _zoomLevelMap = {};
-  final Map<int, ll.LatLng?> _centerMap = {};
+  // Per-card state keyed by docId
+  final Map<String, bool> _satelliteViewById = {};
+  final Map<String, double> _zoomById = {};
+  final Map<String, ll.LatLng?> _centerById = {};
+  final Map<String, gmap.GoogleMapController?> _gControllerById = {};
+
   String _searchQuery = '';
   Timer? _searchDebounce;
-
-  // Google Map controllers per item
-  final Map<int, gmap.GoogleMapController?> _gControllers = {};
 
   gmap.LatLng _g(ll.LatLng p) => gmap.LatLng(p.latitude, p.longitude);
   List<gmap.LatLng> _gList(List<ll.LatLng> pts) => pts.map(_g).toList();
@@ -88,14 +91,17 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     _scrollController.dispose();
     _debounce?.cancel();
     _searchDebounce?.cancel();
+    for (final ctrl in _gControllerById.values) {
+      ctrl?.dispose();
+    }
     super.dispose();
   }
 
+  // ---------- Networking helpers ----------
   Future<Map<String, dynamic>?> fetchLandRecord(String parcelId) async {
     final url = Uri.parse('http://10.0.2.2:4000/api/landledger/$parcelId');
     try {
       final response = await http.get(url).timeout(const Duration(seconds: 5));
-
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         if (data['title_number'] == null || data['coordinates'] == null) {
@@ -119,6 +125,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     }
   }
 
+  // ---------- Paging / search ----------
   void _onScroll() {
     if (_debounce?.isActive ?? false) _debounce!.cancel();
     _debounce = Timer(const Duration(milliseconds: 200), () {
@@ -139,60 +146,132 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     }).toList();
   }
 
+  /// Normalizes a Firestore doc (from either path) to a renderable property + polygon.
+  /// Returns a _NormalizedProp or null if malformed.
+  _NormalizedProp? _normalizeDoc(DocumentSnapshot d) {
+    final data = d.data();
+    if (data is! Map<String, dynamic>) return null;
+
+    final coordsRaw = (data['coordinates'] as List? ?? const []);
+    final coords = coordsRaw
+        .where((c) => c is Map && c['lat'] != null && c['lng'] != null)
+        .map((c) => ll.LatLng(
+              (c['lat'] as num).toDouble(),
+              (c['lng'] as num).toDouble(),
+            ))
+        .toList();
+
+    final id = (data['id'] ?? d.id).toString();
+    if (id.isEmpty) return null;
+
+    return _NormalizedProp(
+      prop: data,
+      polygon: coords,
+      stableId: id,
+    );
+  }
+
+  /// Fetch from BOTH:
+  /// 1) NEW nested: users/{uid}/regions/{regionIdCanonical}/properties (complete list)
+  /// 2) LEGACY flat: users/{uid}/regions (paged) — keep pagination behavior for large old sets
   Future<void> _fetchProperties() async {
-    if (_user == null || _isLoading || !_hasMore) return;
+    if (_user == null || _isLoading) return;
 
     setState(() => _isLoading = true);
 
+    final regionIdCanonical = canonicalizeRegionId(widget.regionId);
+    final mergedById = <String, _NormalizedProp>{};
+
     try {
-      var query = FirebaseFirestore.instance
+      // ---- 1) NEW nested path (full read for this region) ----
+      final nestedSnap = await FirebaseFirestore.instance
           .collection('users')
           .doc(_user!.uid)
           .collection('regions')
-          .where('region', isEqualTo: widget.regionId)
-          .orderBy('timestamp', descending: true)
-          .limit(10);
+          .doc(regionIdCanonical)
+          .collection('properties')
+          .orderBy('updatedAt', descending: true)
+          .get();
 
-      if (_lastDocument != null) {
-        query = query.startAfterDocument(_lastDocument!);
+      for (final d in nestedSnap.docs) {
+        final norm = _normalizeDoc(d);
+        if (norm != null) {
+          mergedById[norm.stableId] = norm;
+        }
       }
 
-      final snapshot = await query.get();
+      // ---- 2) LEGACY flat path (paged) ----
+      QuerySnapshot<Map<String, dynamic>>? legacySnap;
 
-      if (snapshot.docs.isNotEmpty) {
-        final props = <Map<String, dynamic>>[];
-        final polys = <List<ll.LatLng>>[];
-        final ids = <String>[];
+      try {
+        var legacyQuery = FirebaseFirestore.instance
+            .collection('users')
+            .doc(_user!.uid)
+            .collection('regions')
+            .orderBy('timestamp', descending: true)
+            .limit(10);
 
-        for (var doc in snapshot.docs) {
-          final data = doc.data();
-          final coords = (data['coordinates'] as List)
-              .where((c) => c is Map && c['lat'] != null && c['lng'] != null)
-              .map((c) => ll.LatLng(
-                    (c['lat'] as num).toDouble(),
-                    (c['lng'] as num).toDouble(),
-                  ))
-              .toList();
-
-          props.add(data);
-          polys.add(coords);
-          ids.add(doc.id);
-
-          final index = _userProperties.length + props.length - 1;
-          _satelliteViewMap[index] = false;
-          _zoomLevelMap[index] = 15.0;
-          _centerMap[index] = null;
+        if (_lastDocument != null) {
+          legacyQuery = legacyQuery.startAfterDocument(_lastDocument!);
         }
 
-        setState(() {
-          _userProperties.addAll(props);
-          _polygonPointsList.addAll(polys);
-          _documentIds.addAll(ids);
-          _lastDocument = snapshot.docs.last;
-        });
-      } else {
-        setState(() => _hasMore = false);
+        legacySnap = await legacyQuery.get();
+      } catch (e) {
+        // If legacy path errors, keep going with what we have from nested
+        debugPrint('Legacy fetch error: $e');
+        legacySnap = null;
       }
+
+      if (legacySnap == null || legacySnap.docs.isEmpty) {
+        // No more legacy docs to page through
+        _hasMore = false;
+      } else {
+        _lastDocument = legacySnap.docs.last;
+
+        for (final d in legacySnap.docs) {
+          final norm = _normalizeDoc(d);
+          if (norm == null) continue;
+
+          // Only include legacy entries for this region (match by canonical or human)
+          final regionField = (norm.prop['region'] ?? norm.prop['regionId'] ?? '').toString();
+          final matches = canonicalizeRegionId(regionField) == regionIdCanonical ||
+              regionField.trim().toLowerCase() == widget.regionId.trim().toLowerCase();
+
+          if (!matches) continue;
+
+          // Prefer the NEW nested version if already present; otherwise add legacy
+          if (!mergedById.containsKey(norm.stableId)) {
+            mergedById[norm.stableId] = norm;
+          }
+        }
+      }
+
+      // ---- Merge into UI lists (append-only to support lazy loading on legacy) ----
+      // We append only the entries that are not already present in _documentIds
+      final newEntries = mergedById.values
+          .where((e) => !_documentIds.contains(e.stableId))
+          .toList();
+
+      // Sort newest first by 'updatedAt' (fallback to 'timestamp')
+      newEntries.sort((a, b) {
+        final atA = a.prop['updatedAt'] ?? a.prop['timestamp'];
+        final atB = b.prop['updatedAt'] ?? b.prop['timestamp'];
+        final ta = (atA is Timestamp) ? atA.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+        final tb = (atB is Timestamp) ? atB.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+        return tb.compareTo(ta);
+      });
+
+      setState(() {
+        for (final n in newEntries) {
+          _userProperties.add(n.prop);
+          _polygonPointsList.add(n.polygon);
+          _documentIds.add(n.stableId);
+
+          _satelliteViewById.putIfAbsent(n.stableId, () => false);
+          _zoomById.putIfAbsent(n.stableId, () => 15.0);
+          _centerById.putIfAbsent(n.stableId, () => _centroid(n.polygon));
+        }
+      });
     } catch (e) {
       debugPrint('Error fetching properties: $e');
       if (mounted) {
@@ -205,28 +284,47 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     }
   }
 
+  Future<void> _refreshAll() async {
+    setState(() {
+      _userProperties.clear();
+      _polygonPointsList.clear();
+      _documentIds.clear();
+      _hasMore = true;
+      _lastDocument = null;
+      _selectedPolygon = null;
+      _showPolygonInfo = false;
+      _satelliteViewById.clear();
+      _zoomById.clear();
+      _centerById.clear();
+      _gControllerById.clear();
+      _searchQuery = '';
+    });
+    await _fetchProperties();
+  }
+
+  // ---------- Interactions ----------
   void _handlePolygonTap(int index) {
     setState(() {
       _selectedPolygon = _polygonPointsList[index];
-      _selectedPolygonDoc = _userProperties[index]; // store the map data
+      _selectedPolygonDoc = _userProperties[index];
       _showPolygonInfo = true;
     });
   }
 
-  void _handleMapTap(int index, ll.LatLng point) {
+  void _handleMiniMapTap(String docId, ll.LatLng point) {
     setState(() {
-      if (_centerMap[index] == null) {
-        _centerMap[index] = point;
-        _zoomLevelMap[index] = 18.0;
+      if (_centerById[docId] == null) {
+        _centerById[docId] = point;
+        _zoomById[docId] = 18.0;
       } else {
-        _centerMap[index] = null;
-        _zoomLevelMap[index] = 15.0;
+        _centerById[docId] = null;
+        _zoomById[docId] = 15.0;
       }
     });
 
-    final target = _centerMap[index] ?? point;
-    final z = (_zoomLevelMap[index] ?? 15.0).toDouble();
-    _gControllers[index]?.animateCamera(
+    final target = _centerById[docId] ?? point;
+    final z = (_zoomById[docId] ?? 15.0).toDouble();
+    _gControllerById[docId]?.animateCamera(
       gmap.CameraUpdate.newLatLngZoom(_g(target), z),
     );
   }
@@ -235,6 +333,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     if (_user == null || !mounted) return;
 
     final docId = _documentIds[index];
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -256,12 +355,27 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     if (confirm != true) return;
 
     try {
-      await FirebaseFirestore.instance
+      final regionIdCanonical = canonicalizeRegionId(widget.regionId);
+
+      // Delete in BOTH locations to stay consistent with MapScreen.savePolygon
+      final legacyRef = FirebaseFirestore.instance
           .collection('users')
           .doc(_user!.uid)
           .collection('regions')
-          .doc(docId)
-          .delete();
+          .doc(docId);
+
+      final nestedRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(_user!.uid)
+          .collection('regions')
+          .doc(regionIdCanonical)
+          .collection('properties')
+          .doc(docId);
+
+      final batch = FirebaseFirestore.instance.batch();
+      batch.delete(legacyRef);
+      batch.delete(nestedRef);
+      await batch.commit();
 
       if (!mounted) return;
 
@@ -269,17 +383,16 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
         _userProperties.removeAt(index);
         _polygonPointsList.removeAt(index);
         _documentIds.removeAt(index);
-        _satelliteViewMap.remove(index);
-        _zoomLevelMap.remove(index);
-        _centerMap.remove(index);
-        _gControllers.remove(index);
+
+        _satelliteViewById.remove(docId);
+        _zoomById.remove(docId);
+        _centerById.remove(docId);
+        _gControllerById.remove(docId);
       });
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Property deleted successfully')),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Property deleted successfully')),
+      );
     } catch (e) {
       debugPrint('Failed to delete: $e');
       if (mounted) {
@@ -294,26 +407,25 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     if (value == null || value == 0) return 'Area: Unknown';
     final areaSqKm = value as num;
     final areaSqM = areaSqKm * 1e6;
-
     return areaSqM >= 100000
         ? '${(areaSqM / 1e6).toStringAsFixed(2)} km²'
         : '${areaSqM.toStringAsFixed(0)} m²';
   }
 
+  // ---------- UI ----------
   Widget _buildPropertyCard(int originalIndex) {
     final prop = _userProperties[originalIndex];
     final poly = _polygonPointsList[originalIndex];
+    final docId = _documentIds[originalIndex];
 
-    if (poly.isEmpty) return const SizedBox.shrink();
-
-    // Handle both Firestore and potential blockchain formats (kept for compatibility)
     final titleNumber = prop['title_number'] ?? prop['parcelId'] ?? 'Untitled Property';
 
-    final isSelected = _selectedPolygon == poly;
-    final isSatellite = _satelliteViewMap[originalIndex] ?? false;
-    final zoomLevel = _zoomLevelMap[originalIndex] ?? 15.0;
+    final isSelected = identical(_selectedPolygon, poly);
+    final isSatellite = _satelliteViewById[docId] ?? false;
+    final zoomLevel = _zoomById[docId] ?? 15.0;
 
-    final center = _centerMap[originalIndex] ?? _centroid(poly);
+    final center = _centerById[docId] ?? _centroid(poly);
+    final miniMapKey = ValueKey('miniMap_$docId');
 
     return GestureDetector(
       onTap: () => _handlePolygonTap(originalIndex),
@@ -338,8 +450,9 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                   SizedBox(
                     height: 180,
                     child: GestureDetector(
-                      onTap: () => _handleMapTap(originalIndex, center),
+                      onTap: () => _handleMiniMapTap(docId, center),
                       child: gmap.GoogleMap(
+                        key: miniMapKey,
                         mapType: isSatellite ? gmap.MapType.hybrid : gmap.MapType.normal,
                         initialCameraPosition: gmap.CameraPosition(
                           target: _g(center),
@@ -354,7 +467,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                         zoomControlsEnabled: true,
                         mapToolbarEnabled: false,
                         onMapCreated: (ctrl) async {
-                          _gControllers[originalIndex] = ctrl;
+                          _gControllerById[docId] = ctrl;
                           await ctrl.moveCamera(
                             gmap.CameraUpdate.newCameraPosition(
                               gmap.CameraPosition(target: _g(center), zoom: zoomLevel.toDouble()),
@@ -362,51 +475,44 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                           );
                         },
                         polygons: {
-                          gmap.Polygon(
-                            polygonId: gmap.PolygonId('prop_$originalIndex'),
-                            points: _gList(poly),
-                            strokeWidth: isSelected ? 3 : 2,
-                            strokeColor: isSelected ? Colors.white : Colors.blue,
-                            fillColor: (isSelected ? Colors.white : Colors.blue)
-                                .withOpacity(isSelected ? 0.7 : 0.3),
-                            consumeTapEvents: false,
-                          ),
+                          if (poly.length >= 3)
+                            gmap.Polygon(
+                              polygonId: gmap.PolygonId('prop_$docId'),
+                              points: _gList(poly),
+                              strokeWidth: isSelected ? 3 : 2,
+                              strokeColor: isSelected ? Colors.white : Colors.blue,
+                              fillColor: (isSelected ? Colors.white : Colors.blue)
+                                  .withOpacity(isSelected ? 0.7 : 0.3),
+                              consumeTapEvents: false,
+                            ),
                         },
                         onTap: (_) {
-                          _handleMapTap(originalIndex, center);
-                          final ctrl = _gControllers[originalIndex];
+                          _handleMiniMapTap(docId, center);
+                          final ctrl = _gControllerById[docId];
                           if (ctrl != null) {
-                            final target = _centerMap[originalIndex] ?? center;
-                            final z = (_zoomLevelMap[originalIndex] ?? 15.0).toDouble();
-                            ctrl.animateCamera(gmap.CameraUpdate.newLatLngZoom(_g(target), z));
+                            final target = _centerById[docId] ?? center;
+                            final z = (_zoomById[docId] ?? 15.0).toDouble();
+                            ctrl.animateCamera(
+                                gmap.CameraUpdate.newLatLngZoom(_g(target), z));
                           }
                         },
                       ),
                     ),
                   ),
-                  
-      
                   Positioned(
                     top: 8,
                     right: 8,
                     child: PopupMenuButton<String>(
                       icon: const Icon(Icons.more_vert, color: Color.fromARGB(255, 10, 10, 10)),
                       itemBuilder: (context) => [
-                        const PopupMenuItem(
-                          value: 'view_blockchain',
-                          child: Text('View on Blockchain'),
-                        ),
-                        const PopupMenuItem(
-                          value: 'land_deed',
-                          child: Text('View Land Deed'),
-                        ),
                         PopupMenuItem(
                           value: 'toggle_view',
                           child: Text(isSatellite ? 'Normal View' : 'Satellite View'),
                         ),
                         const PopupMenuItem(
-                          value: 'open_fullscreen', 
-                          child: Text('Open Fullscreen Map')),
+                          value: 'open_fullscreen',
+                          child: Text('Open Fullscreen Map'),
+                        ),
                         const PopupMenuDivider(),
                         const PopupMenuItem(
                           value: 'delete',
@@ -415,59 +521,14 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                       ],
                       onSelected: (value) async {
                         switch (value) {
-                          case 'view_blockchain':
-                            final parcelId = prop['parcelId'] ??
-                                prop['id'] ??
-                                (prop['title_number']?.toString().replaceFirst('TN-', 'LL-'));
-                            if (parcelId == null || parcelId.isEmpty) {
-                              if (!mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('No parcel ID available')),
-                              );
-                              return;
-                            }
-                            try {
-                              final url = Uri.parse('http://10.0.2.2:4000/api/landledger/parcel/$parcelId');
-                              final response = await http.get(url).timeout(const Duration(seconds: 5));
-                              if (response.statusCode == 200) {
-                                final data = jsonDecode(response.body);
-                                if (!mounted) return;
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => LandledgerScreen(selectedRecord: data),
-                                  ),
-                                );
-                              } else {
-                                if (!mounted) return;
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('Blockchain error: ${response.statusCode}')),
-                                );
-                              }
-                            } on TimeoutException {
-                              if (!mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Request timeout')),
-                              );
-                            } catch (e) {
-                              if (!mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('Error: $e')),
-                              );
-                            }
-                            break;
-
                           case 'delete':
                             await _deleteProperty(originalIndex);
                             break;
-
                           case 'toggle_view':
                             setState(() {
-                              _satelliteViewMap[originalIndex] =
-                                  !(_satelliteViewMap[originalIndex] ?? false);
+                              _satelliteViewById[docId] = !(_satelliteViewById[docId] ?? false);
                             });
                             break;
-
                           case 'open_fullscreen':
                             Navigator.push(
                               context,
@@ -475,7 +536,9 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                                 builder: (_) => MapScreen(
                                   regionId: widget.regionId,
                                   geojsonPath: widget.geojsonPath,
-                                  highlightPolygon: _polygonPointsList[originalIndex],
+                                  highlightPolygon: poly,
+                                  startDrawing: false,
+                                  centerOnRegion: false,
                                 ),
                               ),
                             );
@@ -612,6 +675,12 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
 
     final docData = _selectedPolygonDoc!;
 
+    String _areaFormatted(num? areaSqKm) {
+      final a = areaSqKm ?? 0;
+      final m2 = a * 1e6;
+      return m2 >= 100000 ? '${(m2 / 1e6).toStringAsFixed(2)} km²' : '${m2.toStringAsFixed(0)} m²';
+    }
+
     return Positioned(
       bottom: 16,
       left: 16,
@@ -693,10 +762,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                 const SizedBox(height: 12),
                 _buildInfoRow('Description', docData['description']),
                 _buildInfoRow('Wallet', docData['wallet_address']),
-                _buildInfoRow(
-                  'Area',
-                  '${(docData['area_sqkm'] is num) ? (docData['area_sqkm'] as num).toStringAsFixed(2) : '0.00'} km²',
-                ),
+                _buildInfoRow('Area', _areaFormatted(docData['area_sqkm'] as num?)),
                 if (docData['timestamp'] != null)
                   _buildInfoRow(
                     'Created',
@@ -757,6 +823,22 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     );
   }
 
+  Future<void> _openCreator() async {
+    final created = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MapScreen(
+          regionId: widget.regionId,
+          geojsonPath: widget.geojsonPath,
+          startDrawing: true,
+        ),
+      ),
+    );
+    if (created == true) {
+      await _refreshAll();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final displayed = _filteredProperties;
@@ -767,8 +849,6 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
             ? IconButton(
                 icon: const Icon(Icons.arrow_back),
                 onPressed: () {
-                  debugPrint('🔙 Back button pressed in MyPropertiesScreen');
-
                   if (widget.onBackToHome != null) {
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       widget.onBackToHome!();
@@ -815,18 +895,24 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
               setState(() {
                 switch (value) {
                   case 'newest':
-                    _userProperties.sort((a, b) => b['timestamp'].compareTo(a['timestamp']));
+                    _userProperties.sort(
+                      (a, b) => (b['timestamp'] ?? b['updatedAt'])
+                          .compareTo(a['timestamp'] ?? a['updatedAt']),
+                    );
                     break;
                   case 'oldest':
-                    _userProperties.sort((a, b) => a['timestamp'].compareTo(b['timestamp']));
+                    _userProperties.sort(
+                      (a, b) => (a['timestamp'] ?? a['updatedAt'])
+                          .compareTo(b['timestamp'] ?? b['updatedAt']),
+                    );
                     break;
                   case 'largest':
-                    _userProperties
-                        .sort((a, b) => (b['area_sqkm'] ?? 0).compareTo(a['area_sqkm'] ?? 0));
+                    _userProperties.sort((a, b) =>
+                        (b['area_sqkm'] ?? 0).compareTo(a['area_sqkm'] ?? 0));
                     break;
                   case 'smallest':
-                    _userProperties
-                        .sort((a, b) => (a['area_sqkm'] ?? 0).compareTo(b['area_sqkm'] ?? 0));
+                    _userProperties.sort((a, b) =>
+                        (a['area_sqkm'] ?? 0).compareTo(b['area_sqkm'] ?? 0));
                     break;
                 }
               });
@@ -834,22 +920,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
           ),
           IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: () {
-              setState(() {
-                _userProperties.clear();
-                _polygonPointsList.clear();
-                _documentIds.clear();
-                _hasMore = true;
-                _lastDocument = null;
-                _selectedPolygon = null;
-                _showPolygonInfo = false;
-                _satelliteViewMap.clear();
-                _zoomLevelMap.clear();
-                _centerMap.clear();
-                _searchQuery = '';
-              });
-              _fetchProperties();
-            },
+            onPressed: _refreshAll,
           ),
         ],
       ),
@@ -868,18 +939,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                   ),
                   const SizedBox(height: 8),
                   TextButton(
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => MapScreen(
-                            regionId: widget.regionId,
-                            geojsonPath: widget.geojsonPath,
-                            startDrawing: true,
-                          ),
-                        ),
-                      );
-                    },
+                    onPressed: _openCreator,
                     child: const Text('Create your first property'),
                   ),
                 ],
@@ -887,22 +947,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
             )
           else
             RefreshIndicator(
-              onRefresh: () async {
-                setState(() {
-                  _userProperties.clear();
-                  _polygonPointsList.clear();
-                  _documentIds.clear();
-                  _hasMore = true;
-                  _lastDocument = null;
-                  _selectedPolygon = null;
-                  _showPolygonInfo = false;
-                  _satelliteViewMap.clear();
-                  _zoomLevelMap.clear();
-                  _centerMap.clear();
-                  _searchQuery = '';
-                });
-                await _fetchProperties();
-              },
+              onRefresh: _refreshAll,
               child: ListView.builder(
                 controller: _scrollController,
                 padding: const EdgeInsets.only(bottom: 80),
@@ -914,7 +959,6 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                       child: Center(child: CircularProgressIndicator()),
                     );
                   }
-                  // Map filtered item to its original index so parallel arrays stay in sync
                   final prop = displayed[idx];
                   final originalIndex = _userProperties.indexOf(prop);
                   if (originalIndex < 0) return const SizedBox.shrink();
@@ -927,19 +971,20 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
       ),
       floatingActionButton: FloatingActionButton(
         child: const Icon(Icons.add),
-        onPressed: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => MapScreen(
-                regionId: widget.regionId,
-                geojsonPath: widget.geojsonPath,
-                startDrawing: true,
-              ),
-            ),
-          );
-        },
+        onPressed: _openCreator,
       ),
     );
   }
+}
+
+class _NormalizedProp {
+  final Map<String, dynamic> prop;
+  final List<ll.LatLng> polygon;
+  final String stableId;
+
+  _NormalizedProp({
+    required this.prop,
+    required this.polygon,
+    required this.stableId,
+  });
 }

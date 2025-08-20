@@ -1,9 +1,9 @@
 // lib/country_region_interact.dart
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
+import 'dart:math' as math;
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:google_maps_flutter/google_maps_flutter.dart' as gmap;
-import 'package:flutter/material.dart';
 
 /// Simple style config for polygons.
 class RegionStyle {
@@ -22,66 +22,117 @@ class CountryRegionController {
   CountryRegionController({
     this.normalStyle = const RegionStyle(
       stroke: Color(0xFF1E88E5),
-      fill: Color(0x4D1E88E5), // ~30% alpha
+      fill: Color(0x331E88E5), // ~20% alpha blue
       strokeWidth: 2,
     ),
     this.selectedStyle = const RegionStyle(
-      stroke: Colors.white,
-      fill: Color(0x80FFFFFF), // ~50% alpha
+      stroke: Color(0xFF1565C0),
+      fill: Color(0x801565C0), // ~50% alpha blue
       strokeWidth: 4,
     ),
     this.onRegionSelected,
   });
 
-  /// Styles
+  // Styles
   final RegionStyle normalStyle;
   final RegionStyle selectedStyle;
 
-  /// Optional callback when a region is selected.
+  // Optional callback when a region is selected.
   final void Function(String regionId)? onRegionSelected;
 
-  /// Google map controller (attached by your map widget).
+  // Attach your GoogleMap controller.
   gmap.GoogleMapController? mapController;
 
-  /// Expose polygons with a ValueNotifier so outside widgets can rebuild easily.
+  // Public notifiers.
   final ValueNotifier<Set<gmap.Polygon>> polygonsNotifier =
       ValueNotifier<Set<gmap.Polygon>>({});
-
-  /// Currently selected region ID (typically the ADM1 'name').
   final ValueNotifier<String?> selectedRegionId = ValueNotifier<String?>(null);
 
-  /// regionId -> list of polygon parts.
-  /// Each part contains: exterior ring + holes.
-  ///   {
-  ///     "exterior": <List<gmap.LatLng>>,
-  ///     "holes": <List<List<gmap.LatLng>>>
-  ///   }
+  // Internal stores.
   final Map<String, List<Map<String, dynamic>>> _regionParts = {};
-
-  /// Convenience: regionId -> all exterior points (merged) for bounds calc.
   final Map<String, List<gmap.LatLng>> _regionExteriorForBounds = {};
+  final Map<String, Map<String, dynamic>> _regionProps = {};
 
-  /// Attach the GoogleMap controller once map is created.
+  // NEW: toggle region shading so properties remain visible.
+  bool _shadingEnabled = true;
+  void setShading(bool enabled) {
+    _shadingEnabled = enabled;
+    _rebuildPolygons();
+  }
+
+  // Public helpers
+  List<String> get regionIds => _regionParts.keys.toList(growable: false);
+  Map<String, dynamic>? getProps(String id) => _regionProps[id];
+  gmap.LatLngBounds? getBounds(String id) {
+    final pts = _regionExteriorForBounds[id];
+    if (pts == null || pts.isEmpty) return null;
+    return _boundsFrom(pts);
+  }
+
+  // NEW: expose raw exterior rings for containment tests in your UI
+  List<List<gmap.LatLng>> regionExteriors(String id) {
+    final parts = _regionParts[id];
+    if (parts == null) return const [];
+    return parts
+        .map((p) => (p['exterior'] as List<gmap.LatLng>))
+        .toList(growable: false);
+  }
+
+  gmap.LatLng getCentroid(String id) {
+    final pts = _regionExteriorForBounds[id] ?? const <gmap.LatLng>[];
+    if (pts.isEmpty) return const gmap.LatLng(0, 0);
+    double x = 0, y = 0, z = 0;
+    for (final p in pts) {
+      final lat = p.latitude * (math.pi / 180.0);
+      final lng = p.longitude * (math.pi / 180.0);
+      x += math.cos(lat) * math.cos(lng);
+      y += math.cos(lat) * math.sin(lng);
+      z += math.sin(lat);
+    }
+    final total = pts.length.toDouble();
+    x /= total; y /= total; z /= total;
+    final hyp = math.sqrt(x * x + y * y);
+    return gmap.LatLng(
+      math.atan2(z, hyp) * 180 / math.pi,
+      math.atan2(y, x) * 180 / math.pi,
+    );
+  }
+
   void attachMapController(gmap.GoogleMapController controller) {
     mapController = controller;
   }
 
-  /// Load ADM1 GeoJSON from assets and build polygons.
-  /// The file should have a FeatureCollection with geometry of type Polygon or MultiPolygon
-  /// and a 'name' property per feature (we use that as regionId).
+  String _chooseRegionId(Map<String, dynamic> props) {
+    const candidates = ['name', 'NAME_1', 'ADM1_EN', 'adm1_name', 'NAME'];
+    for (final k in candidates) {
+      final v = props[k];
+      if (v is String && v.trim().isNotEmpty) return v;
+    }
+    final fallback = props.entries.firstWhere(
+      (e) => e.value is String && (e.value as String).trim().isNotEmpty,
+      orElse: () => const MapEntry('id', 'Unknown'),
+    );
+    return fallback.value as String;
+  }
+
   Future<void> loadAdm1FromAsset(String assetPath) async {
     final raw = await rootBundle.loadString(assetPath);
     final fc = jsonDecode(raw) as Map<String, dynamic>;
 
     _regionParts.clear();
     _regionExteriorForBounds.clear();
+    _regionProps.clear();
 
-    for (final feat in (fc['features'] as List)) {
-      final props = (feat['properties'] as Map<String, dynamic>);
-      final String regionId = (props['name'] as String);
+    final features = (fc['features'] as List?) ?? const [];
+    for (final f in features) {
+      final feat = f as Map<String, dynamic>;
+      final props = (feat['properties'] as Map<String, dynamic>? ) ?? const {};
+      final regionId = _chooseRegionId(props);
+      _regionProps[regionId] = props;
 
-      final geom = feat['geometry'] as Map<String, dynamic>;
-      final String type = geom['type'] as String;
+      final geom = (feat['geometry'] as Map<String, dynamic>?);
+      if (geom == null) continue;
+      final type = geom['type'] as String?; if (type == null) continue;
 
       Iterable polys;
       if (type == 'MultiPolygon') {
@@ -89,7 +140,6 @@ class CountryRegionController {
       } else if (type == 'Polygon') {
         polys = [(geom['coordinates'] as List)];
       } else {
-        // skip unknown geometry
         continue;
       }
 
@@ -97,47 +147,36 @@ class CountryRegionController {
       final exteriorForBounds = <gmap.LatLng>[];
 
       for (final poly in polys) {
-        // poly is List<LinearRing>; ring[0] = exterior, ring[1..] = holes
         final rings = (poly as List);
+        if (rings.isEmpty) continue;
 
-        // Exterior
-        final ext = (rings.first as List)
-            .map<gmap.LatLng>((c) => gmap.LatLng(
-                  (c[1] as num).toDouble(),
-                  (c[0] as num).toDouble(),
-                ))
-            .toList();
+        final ext = (rings.first as List).map<gmap.LatLng>((c) =>
+          gmap.LatLng((c[1] as num).toDouble(), (c[0] as num).toDouble())
+        ).toList();
 
-        // Holes (optional)
         final holes = <List<gmap.LatLng>>[];
-        if (rings.length > 1) {
-          for (int h = 1; h < rings.length; h++) {
-            final hole = (rings[h] as List)
-                .map<gmap.LatLng>((c) => gmap.LatLng(
-                      (c[1] as num).toDouble(),
-                      (c[0] as num).toDouble(),
-                    ))
-                .toList();
-            holes.add(hole);
-          }
+        for (int h = 1; h < rings.length; h++) {
+          final hole = (rings[h] as List).map<gmap.LatLng>((c) =>
+            gmap.LatLng((c[1] as num).toDouble(), (c[0] as num).toDouble())
+          ).toList();
+          if (hole.isNotEmpty) holes.add(hole);
         }
 
-        regionParts.add({
-          "exterior": ext,
-          "holes": holes,
-        });
-
-        exteriorForBounds.addAll(ext);
+        if (ext.isNotEmpty) {
+          regionParts.add({"exterior": ext, "holes": holes});
+          exteriorForBounds.addAll(ext);
+        }
       }
 
-      _regionParts[regionId] = regionParts;
-      _regionExteriorForBounds[regionId] = exteriorForBounds;
+      if (regionParts.isNotEmpty) {
+        _regionParts[regionId] = regionParts;
+        _regionExteriorForBounds[regionId] = exteriorForBounds;
+      }
     }
 
-    _rebuildPolygons(); // push to notifier
+    _rebuildPolygons();
   }
 
-  /// Programmatically select a region (updates style + centers/zooms).
   Future<void> selectRegion(String regionId) async {
     if (!_regionParts.containsKey(regionId)) return;
     selectedRegionId.value = regionId;
@@ -146,7 +185,6 @@ class CountryRegionController {
     onRegionSelected?.call(regionId);
   }
 
-  /// Internal: rebuild polygon set with correct styles.
   void _rebuildPolygons() {
     final selected = selectedRegionId.value;
     final set = <gmap.Polygon>{};
@@ -154,6 +192,8 @@ class CountryRegionController {
     _regionParts.forEach((regionId, parts) {
       final isSelected = (selected == regionId);
       final style = isSelected ? selectedStyle : normalStyle;
+      final Color fillForThis =
+          (isSelected && !_shadingEnabled) ? style.fill.withAlpha(0) : style.fill;
 
       for (int i = 0; i < parts.length; i++) {
         final exterior = parts[i]["exterior"] as List<gmap.LatLng>;
@@ -165,7 +205,7 @@ class CountryRegionController {
             holes: holes,
             strokeWidth: style.strokeWidth,
             strokeColor: style.stroke,
-            fillColor: style.fill,
+            fillColor: fillForThis,
             consumeTapEvents: true,
             onTap: () => selectRegion(regionId),
           ),
@@ -176,22 +216,24 @@ class CountryRegionController {
     polygonsNotifier.value = set;
   }
 
-  /// Camera helpers
   gmap.LatLngBounds _boundsFrom(List<gmap.LatLng> pts) {
-    double? minLat, minLng, maxLat, maxLng;
-    for (final p in pts) {
-      minLat = (minLat == null) ? p.latitude : (p.latitude < minLat ? p.latitude : minLat);
-      minLng = (minLng == null) ? p.longitude : (p.longitude < minLng ? p.longitude : minLng);
-      maxLat = (maxLat == null) ? p.latitude : (p.latitude > maxLat ? p.latitude : maxLat);
-      maxLng = (maxLng == null) ? p.longitude : (p.longitude > maxLng ? p.longitude : maxLng);
+    double minLat = pts.first.latitude,
+           minLng = pts.first.longitude,
+           maxLat = pts.first.latitude,
+           maxLng = pts.first.longitude;
+    for (int i = 1; i < pts.length; i++) {
+      final p = pts[i];
+      if (p.latitude  < minLat) minLat = p.latitude;
+      if (p.longitude < minLng) minLng = p.longitude;
+      if (p.latitude  > maxLat) maxLat = p.latitude;
+      if (p.longitude > maxLng) maxLng = p.longitude;
     }
     return gmap.LatLngBounds(
-      southwest: gmap.LatLng(minLat!, minLng!),
-      northeast: gmap.LatLng(maxLat!, maxLng!),
+      southwest: gmap.LatLng(minLat, minLng),
+      northeast: gmap.LatLng(maxLat, maxLng),
     );
   }
 
-  /// Center/zoom to a region’s bounds.
   Future<void> focusRegion(String regionId, {double padding = 48}) async {
     final controller = mapController;
     if (controller == null) return;
@@ -210,7 +252,6 @@ class CountryRegionController {
     }
   }
 
-  /// Free notifiers when done.
   void dispose() {
     polygonsNotifier.dispose();
     selectedRegionId.dispose();
