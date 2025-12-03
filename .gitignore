@@ -1,11 +1,47 @@
+# Claude Code local configuration
+.claude/
+
+# Node modules
 node_modules/
+
+# Environment files
 .env
-# wallets/keys
-**/wallet/
-# build artifacts
-*.tar.gz
+.env.local
+
+# Log files
+*.log
+npm-debug.log*
+
+# Backup files
+*.bak
+*.bak.*
+wallet_backup_*/
+
+# Build artifacts
+_shutdown_artifacts/
+
+# Wallet files (contains credentials)
+wallet/
+api/wallet/
 *.tgz
-bin/
-# editors/OS
+
+# Connection backup files
+api/connection/*.bak.*
+api/connection/connection-org2.json
+
+# Archive
+archive/
+
+# Editor directories
 .vscode/
-.DS_Store
+.idea/
+
+# Go build artifacts
+chaincode/landledger/chaincode
+
+# Package files
+package-lock.json
+package.json
+ecosystem.config.js
+find_any_parcels.json
+find_bad_coords.json
