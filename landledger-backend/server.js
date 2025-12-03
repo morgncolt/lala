@@ -35,5 +35,6 @@ app.get("/", (req, res) => {
 });
 
 const PORT = process.env.PORT || 4000;  // Use environment variable or default to 4000
+const HOST = '0.0.0.0';  // Listen on all network interfaces (allows connections from network devices)
 //console.log(`PORT value: ${PORT}`);  // Debug: Check if PORT is loaded
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, HOST, () => console.log(`Server running on http://${HOST}:${PORT}`));

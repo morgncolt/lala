@@ -4,6 +4,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
 import 'dart:io';
 import 'comments_screen.dart';
 import 'hashtag_utils.dart';
@@ -18,12 +20,12 @@ class HomeScreen extends StatefulWidget {
   final VoidCallback? onGoToMap;
   
   const HomeScreen({
-    Key? key,
+    super.key,
     this.currentRegionId,
     this.initialSelectedId,
     this.onRegionSelected,
     this.onGoToMap,
-  }) : super(key: key);
+  });
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -78,6 +80,111 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused) {
       // Handle paused state
+    }
+  }
+
+  Future<void> _locateMe() async {
+    try {
+      // Request location permission
+      final permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Location permission denied')),
+          );
+        }
+        return;
+      }
+
+      // Show loading indicator
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Detecting your location...'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+
+      // Get current position
+      final position = await Geolocator.getCurrentPosition();
+
+      // Reverse geocode to get country
+      final placemarks = await placemarkFromCoordinates(
+        position.latitude,
+        position.longitude,
+      );
+
+      if (placemarks.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not detect country')),
+          );
+        }
+        return;
+      }
+
+      final country = placemarks.first.country?.toLowerCase() ?? '';
+      debugPrint('📍 Detected country: $country');
+
+      // Map country name to region ID
+      String? detectedRegionId;
+      if (country.contains('united states') || country.contains('usa')) {
+        detectedRegionId = 'united_states';
+      } else if (country.contains('cameroon')) {
+        detectedRegionId = 'cameroon';
+      } else if (country.contains('ghana')) {
+        detectedRegionId = 'ghana';
+      } else if (country.contains('kenya')) {
+        detectedRegionId = 'kenya';
+      } else if (country.contains('nigeria')) {
+        detectedRegionId = 'nigeria';
+      }
+
+      if (detectedRegionId != null && mounted) {
+        // Update selected region
+        setState(() => _selectedRegionId = detectedRegionId);
+        final region = _regions.firstWhere((r) => r['id'] == detectedRegionId);
+
+        // Save preference
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('last_selected_region_id', detectedRegionId);
+          await prefs.setString('last_selected_geojson_path', region['path']!);
+          debugPrint('💾 Saved detected region: $detectedRegionId');
+        } catch (e) {
+          debugPrint('⚠️ Failed to save region preference: $e');
+        }
+
+        // Notify parent
+        widget.onRegionSelected?.call(detectedRegionId, region['path']!);
+
+        // Show success message
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Location detected: ${region['label']}'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Country not supported: $country'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Location error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to detect location'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
@@ -165,10 +272,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
  void _showNewPostModal() {
-  final TextEditingController _postController = TextEditingController();
-  String? _selectedPostType = 'Update';
-  List<XFile> _selectedImages = [];
-  bool _isUploading = false;
+  final TextEditingController postController = TextEditingController();
+  String? selectedPostType = 'Update';
+  List<XFile> selectedImages = [];
+  bool isUploading = false;
 
   showModalBottomSheet(
     context: context,
@@ -194,7 +301,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 16),
                   TextField(
-                    controller: _postController,
+                    controller: postController,
                     decoration: const InputDecoration(
                       hintText: 'What would you like to share?',
                       border: OutlineInputBorder(),
@@ -204,12 +311,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 16),
                   // Image selection preview
-                  if (_selectedImages.isNotEmpty)
+                  if (selectedImages.isNotEmpty)
                     SizedBox(
                       height: 100,
                       child: ListView.builder(
                         scrollDirection: Axis.horizontal,
-                        itemCount: _selectedImages.length,
+                        itemCount: selectedImages.length,
                         itemBuilder: (context, index) {
                           return Stack(
                             children: [
@@ -220,7 +327,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                 decoration: BoxDecoration(
                                   borderRadius: BorderRadius.circular(8),
                                   image: DecorationImage(
-                                    image: FileImage(File(_selectedImages[index].path)),
+                                    image: FileImage(File(selectedImages[index].path)),
                                     fit: BoxFit.cover,
                                   ),
                                 ),
@@ -232,7 +339,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                   icon: const Icon(Icons.close, size: 20),
                                   onPressed: () {
                                     setModalState(() {
-                                      _selectedImages.removeAt(index);
+                                      selectedImages.removeAt(index);
                                     });
                                   },
                                 ),
@@ -252,14 +359,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           final images = await _picker.pickMultiImage();
                           if (images != null) {
                             setModalState(() {
-                              _selectedImages.addAll(images);
+                              selectedImages.addAll(images);
                             });
                           }
                         },
                         tooltip: 'Add Photos',
                       ),
                       DropdownButton<String>(
-                        value: _selectedPostType,
+                        value: selectedPostType,
                         items: const [
                           DropdownMenuItem(
                             value: 'General',
@@ -284,18 +391,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         ],
                         onChanged: (value) {
                           setModalState(() {
-                            _selectedPostType = value;
+                            selectedPostType = value;
                           });
                         },
                       ),
                     ],
                   ),
                   const SizedBox(height: 16),
-                  _isUploading
+                  isUploading
                       ? const CircularProgressIndicator()
                       : ElevatedButton(
                           onPressed: () async {
-                            if (_postController.text.isEmpty) {
+                            if (postController.text.isEmpty) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
                                     content: Text('Please enter some text')),
@@ -304,13 +411,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             }
 
                             setModalState(() {
-                              _isUploading = true;
+                              isUploading = true;
                             });
 
                             try {
                               // Upload images first
                               List<String> imageUrls = [];
-                              for (var image in _selectedImages) {
+                              for (var image in selectedImages) {
                                 final downloadUrl = await _uploadImage(image);
                                 if (downloadUrl != null) {
                                   imageUrls.add(downloadUrl);
@@ -344,8 +451,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                 'userEmail': _user?.email ?? '',
                                 'displayName': username,
                                 'userPhotoURL': userProfile?.photoURL ?? _user?.photoURL,
-                                'type': _selectedPostType,
-                                'description': _postController.text,
+                                'type': selectedPostType,
+                                'description': postController.text,
                                 'timestamp': FieldValue.serverTimestamp(),
                                 'likes': 0,
                                 'likedBy': [],
@@ -365,7 +472,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               );
                             } finally {
                               setModalState(() {
-                                _isUploading = false;
+                                isUploading = false;
                               });
                             }
                           },
@@ -423,15 +530,7 @@ Future<String?> _uploadImage(XFile imageFile) async {
 
                 widget.onRegionSelected?.call(key, region['path']!);
               },
-              onSearchPressed: () {
-                showSearch(
-                  context: context,
-                  delegate: PostSearchDelegate(
-                    _selectedRegionId!,
-                    onRegionSelected: widget.onRegionSelected,
-                  ),
-                );
-              },
+              onLocateMePressed: _locateMe,
               user: _user,
             ),
 
@@ -526,12 +625,12 @@ class HomePromptSection extends StatelessWidget {
   final VoidCallback? onGoToMap;
 
   const HomePromptSection({
-    Key? key,
+    super.key,
     required this.selectedRegionId,
     required this.regions,
     this.onRegionSelected,
     this.onGoToMap,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -777,13 +876,13 @@ class CommunityFeedSection extends StatelessWidget {
   final void Function(String postId) onShowComments;
 
   const CommunityFeedSection({
-    Key? key,
+    super.key,
     required this.selectedRegionId,
     required this.user,
     required this.onToggleLike,
     required this.onDeletePost,
     required this.onShowComments,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1048,14 +1147,14 @@ class _CustomAppBar extends StatelessWidget {
   final List<Map<String, String>> regions;
   final String? selectedRegionKey;
   final Function(String) onRegionChanged;
-  final VoidCallback onSearchPressed;
+  final VoidCallback onLocateMePressed;
   final User? user;
 
   const _CustomAppBar({
     required this.regions,
     required this.selectedRegionKey,
     required this.onRegionChanged,
-    required this.onSearchPressed,
+    required this.onLocateMePressed,
     required this.user,
   });
 
@@ -1116,9 +1215,10 @@ class _CustomAppBar extends StatelessWidget {
               Row(
                 children: [
                   IconButton(
-                    icon: const Icon(Icons.search, size: 24),
+                    icon: const Icon(Icons.my_location, size: 24),
                     color: Colors.white,
-                    onPressed: onSearchPressed,
+                    onPressed: onLocateMePressed,
+                    tooltip: 'Detect my location',
                   ),
                   if (user != null)
                     GestureDetector(
@@ -1303,7 +1403,7 @@ class PostSearchDelegate extends SearchDelegate {
           .doc(regionKey)
           .collection('posts')
           .where('description', isGreaterThanOrEqualTo: query)
-          .where('description', isLessThan: query + 'z')
+          .where('description', isLessThan: '${query}z')
           .snapshots()
           .handleError((error) {
             debugPrint('Search stream error: $error');

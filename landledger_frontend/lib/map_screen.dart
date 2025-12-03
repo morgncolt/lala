@@ -2,7 +2,7 @@
 // Region-focused zoom, per-state highlight toggle, robust property-in-region matching,
 // Firestore save/load for polygons, and owner-highlight rendering (blue vs. grey).
 
-import 'dart:io' show Platform;
+import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 import 'dart:async';
@@ -19,15 +19,20 @@ import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as gmap;
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart' as ll;
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import 'city_model.dart';
 import 'country_region_interact.dart';
 import 'region_model.dart';
 import 'regions_repository.dart';
 import 'widgets/consent.dart';
+import 'widgets/address_input_widget.dart';
+import 'models/property_address.dart';
 import 'services/identity_service.dart';
 
 class MapScreen extends StatefulWidget {
@@ -50,7 +55,7 @@ class MapScreen extends StatefulWidget {
   final String? highlightOwnerUid;
 
   const MapScreen({
-    Key? key,
+    super.key,
     required this.regionId,
     required this.geojsonPath,
     this.startDrawing = false,
@@ -64,7 +69,7 @@ class MapScreen extends StatefulWidget {
     this.onBlockchainUpdate,
     this.showAllWithOwnerHighlight = true,
     this.highlightOwnerUid,
-  }) : super(key: key);
+  });
 
   @override
   State<MapScreen> createState() => _MapScreenState();
@@ -74,6 +79,9 @@ class _MapScreenState extends State<MapScreen> {
   final user = FirebaseAuth.instance.currentUser;
   final mapController = MapController();
   final TextEditingController descriptionController = TextEditingController();
+  PropertyAddress? _propertyAddress; // Structured address from AddressInputWidget
+  final ImagePicker _imagePicker = ImagePicker();
+  List<XFile> _selectedImages = [];
 
   final bool _useGoogle = true;
 
@@ -146,6 +154,107 @@ class _MapScreenState extends State<MapScreen> {
       s.trim().replaceFirst(RegExp(r'^#+'), '');
   String _ensureSingleHash(String s) => '#${_stripLeadingHashes(s)}';
   String _aliasKeyFrom(String s) => _stripLeadingHashes(s).toUpperCase();
+
+  /// Build formatted address display from Firestore data
+  Widget _buildAddressDisplay(Map<String, dynamic> data) {
+    // Try to get structured address first
+    final addressData = data['address'];
+    PropertyAddress? address;
+
+    if (addressData is Map<String, dynamic>) {
+      try {
+        address = PropertyAddress.fromJson(addressData);
+      } catch (e) {
+        debugPrint('Error parsing address: $e');
+      }
+    }
+
+    // Fallback to addressString if structured address isn't available
+    final addressString = data['addressString'] as String?;
+
+    // If no address data at all, show nothing
+    if (address == null && (addressString == null || addressString.isEmpty)) {
+      return const SizedBox.shrink();
+    }
+
+    // Use structured address if available, otherwise use string
+    final displayText = address?.toDisplayString() ?? addressString ?? 'No address';
+
+    // If structured address exists and has details, show expandable detailed view
+    if (address != null && address.isNotEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.location_on, size: 16, color: Colors.blue),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  displayText,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          // Show structured details in a compact format
+          if (address.houseNumber != null || address.streetName != null ||
+              address.postalCode != null || address.additionalInfo != null)
+            Padding(
+              padding: const EdgeInsets.only(left: 20, top: 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (address.houseNumber != null || address.streetName != null)
+                    Text(
+                      [
+                        if (address.houseNumber != null) 'House: ${address.houseNumber}',
+                        if (address.streetName != null) 'Street: ${address.streetName}',
+                      ].join(' • '),
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                  if (address.postalCode != null)
+                    Text(
+                      'Postal Code: ${address.postalCode}',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                  if (address.additionalInfo != null && address.additionalInfo!.isNotEmpty)
+                    Text(
+                      'Note: ${address.additionalInfo}',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.grey.shade600,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+        ],
+      );
+    }
+
+    // Simple display for string-only address
+    return Row(
+      children: [
+        const Icon(Icons.location_on, size: 16, color: Colors.blue),
+        const SizedBox(width: 4),
+        Expanded(
+          child: Text(
+            displayText,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
   List<ll.LatLng> _quantizeRing(List<ll.LatLng> pts) =>
       pts.map((p) => ll.LatLng(_q6(p.latitude), _q6(p.longitude))).toList();
@@ -277,20 +386,20 @@ class _MapScreenState extends State<MapScreen> {
     List<ll.LatLng>? poly;
     DocumentSnapshot? doc;
 
-    bool _matchDoc(DocumentSnapshot d) {
+    bool matchDoc(DocumentSnapshot d) {
       final m = (d.data() ?? {}) as Map<String, dynamic>;
       final k =
           (m['aliasKey'] ?? _aliasKeyFrom(m['alias'] ?? '')).toString().toUpperCase();
       return k == key;
     }
 
-    final iUser = userPolygonDocs.indexWhere(_matchDoc);
+    final iUser = userPolygonDocs.indexWhere(matchDoc);
     if (iUser >= 0) {
       poly = userPolygons[iUser];
       doc = userPolygonDocs[iUser];
     }
     if (poly == null) {
-      final iOther = otherPolygonDocs.indexWhere(_matchDoc);
+      final iOther = otherPolygonDocs.indexWhere(matchDoc);
       if (iOther >= 0) {
         poly = otherPolygons[iOther];
         doc = otherPolygonDocs[iOther];
@@ -304,7 +413,7 @@ class _MapScreenState extends State<MapScreen> {
         _showPolygonInfo = true;
       });
       if (_gController != null) {
-        final b = _boundsFromLl(poly!);
+        final b = _boundsFromLl(poly);
         await _gController!.animateCamera(
           gmap.CameraUpdate.newLatLngBounds(b, 150),
         );
@@ -321,11 +430,7 @@ class _MapScreenState extends State<MapScreen> {
 
   // Same logic you used in landledger_screen.dart
   String get _apiBase {
-    if (kIsWeb || Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-      return 'http://localhost:4000';
-    }
-    if (Platform.isAndroid) return 'http://192.168.0.23:4000';
-    if (Platform.isIOS) return 'http://localhost:4000';
+    // Use localhost for all platforms (ADB reverse port forwarding handles Android connectivity)
     return 'http://localhost:4000';
   }
 
@@ -511,7 +616,7 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   // Global show/hide + per-region hide using base IDs
-  bool _regionFillVisible = true;
+  final bool _regionFillVisible = true;
   final Set<String> _hiddenAdmRegions = <String>{};
 
   // Cache of ADM rings grouped by base name (e.g., "Littoral")
@@ -598,6 +703,7 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void dispose() {
     descriptionController.dispose();
+    // PropertyAddress doesn't need disposal (no controller)
     try {
       _admCtl.dispose();
     } catch (_) {}
@@ -833,6 +939,410 @@ class _MapScreenState extends State<MapScreen> {
     return intersectCount.isOdd;
   }
 
+  // Show options for a polygon point (delete, view coordinates)
+  void _showPointOptions(int index) {
+    if (!isDrawing || index >= currentPolygonPoints.length) return;
+
+    final point = currentPolygonPoints[index];
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(index == 0 ? 'Start Point' : 'Point ${index + 1}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Latitude: ${point.latitude.toStringAsFixed(6)}'),
+            Text('Longitude: ${point.longitude.toStringAsFixed(6)}'),
+            const SizedBox(height: 8),
+            const Text('You can drag this marker to move it.'),
+          ],
+        ),
+        actions: [
+          if (currentPolygonPoints.length > 1)
+            TextButton.icon(
+              onPressed: () {
+                setState(() {
+                  currentPolygonPoints.removeAt(index);
+                });
+                Navigator.pop(context);
+              },
+              icon: const Icon(Icons.delete, color: Colors.red),
+              label: const Text('Delete Point', style: TextStyle(color: Colors.red)),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Show city selector dialog and zoom to selected city
+  Future<void> _showCitySelector() async {
+    debugPrint("🏙️ City selector opened for region: ${widget.regionId}");
+
+    // Check if this is an ADM0 (country-level) region
+    if (CitiesDatabase.isAdm0Region(widget.regionId)) {
+      // Show hierarchical selector: Region → City
+      await _showHierarchicalCitySelector();
+    } else {
+      // Direct city selector for ADM1 regions
+      await _showDirectCitySelector();
+    }
+  }
+
+  // Show hierarchical selector for ADM0 countries (Region → City)
+  Future<void> _showHierarchicalCitySelector() async {
+    // Step 1: Get all ADM1 regions for this country
+    final adm1Regions = CitiesDatabase.getAdm1RegionsForCountry(widget.regionId);
+
+    if (adm1Regions.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No regions available for this country')),
+      );
+      return;
+    }
+
+    // Step 2: Show region selector
+    final selectedRegionId = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        String searchQuery = '';
+        List<MapEntry<String, String>> filteredRegions = adm1Regions.entries.toList();
+
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return Dialog(
+              child: Container(
+                width: 400,
+                constraints: const BoxConstraints(maxHeight: 600),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Header
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade700,
+                        borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.map, color: Colors.white),
+                          const SizedBox(width: 12),
+                          const Text(
+                            'Select a Region',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const Spacer(),
+                          IconButton(
+                            icon: const Icon(Icons.close, color: Colors.white),
+                            onPressed: () => Navigator.pop(context),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // Search bar
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: TextField(
+                        decoration: InputDecoration(
+                          hintText: 'Search regions...',
+                          prefixIcon: const Icon(Icons.search),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                        onChanged: (value) {
+                          setState(() {
+                            searchQuery = value.toLowerCase();
+                            filteredRegions = adm1Regions.entries
+                                .where((entry) => entry.value.toLowerCase().contains(searchQuery))
+                                .toList();
+                          });
+                        },
+                      ),
+                    ),
+
+                    // Region count
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          '${filteredRegions.length} ${filteredRegions.length == 1 ? 'region' : 'regions'}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+
+                    // Regions list
+                    Flexible(
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: filteredRegions.length,
+                        itemBuilder: (context, index) {
+                          final entry = filteredRegions[index];
+                          final regionId = entry.key;
+                          final regionName = entry.value;
+                          final cityCount = CitiesDatabase.getCitiesForRegion(regionId).length;
+
+                          return ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: Colors.green.shade100,
+                              child: Icon(
+                                Icons.map,
+                                color: Colors.green.shade700,
+                                size: 20,
+                              ),
+                            ),
+                            title: Text(
+                              regionName,
+                              style: const TextStyle(fontWeight: FontWeight.w500),
+                            ),
+                            subtitle: Text(
+                              '$cityCount ${cityCount == 1 ? 'city' : 'cities'}',
+                              style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                            ),
+                            trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                            onTap: () => Navigator.pop(context, regionId),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    // Step 3: If region selected, show cities in that region
+    if (selectedRegionId != null) {
+      await _showCitiesForRegion(selectedRegionId);
+    }
+  }
+
+  // Show direct city selector for ADM1 regions or after region selection
+  Future<void> _showDirectCitySelector() async {
+    await _showCitiesForRegion(widget.regionId);
+  }
+
+  // Show cities for a specific region
+  Future<void> _showCitiesForRegion(String regionId) async {
+    final cities = CitiesDatabase.getCitiesForRegion(regionId);
+
+    if (cities.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No cities available for this region')),
+      );
+      return;
+    }
+
+    final selectedCity = await showDialog<City>(
+      context: context,
+      builder: (context) {
+        String searchQuery = '';
+        List<City> filteredCities = cities;
+
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return Dialog(
+              child: Container(
+                width: 400,
+                constraints: const BoxConstraints(maxHeight: 600),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Header
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade700,
+                        borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.location_city, color: Colors.white),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Select a City',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Text(
+                                  CitiesDatabase.getRegionDisplayName(regionId),
+                                  style: TextStyle(
+                                    color: Colors.white.withValues(alpha: 0.8),
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, color: Colors.white),
+                            onPressed: () => Navigator.pop(context),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // Search bar
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: TextField(
+                        decoration: InputDecoration(
+                          hintText: 'Search cities...',
+                          prefixIcon: const Icon(Icons.search),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                        onChanged: (value) {
+                          setState(() {
+                            searchQuery = value.toLowerCase();
+                            filteredCities = cities
+                                .where((city) => city.name.toLowerCase().contains(searchQuery))
+                                .toList();
+                          });
+                        },
+                      ),
+                    ),
+
+                    // City count
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          '${filteredCities.length} ${filteredCities.length == 1 ? 'city' : 'cities'}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+
+                    // Cities list
+                    Flexible(
+                      child: filteredCities.isEmpty
+                          ? Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(32),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.search_off, size: 48, color: Colors.grey.shade400),
+                                    const SizedBox(height: 16),
+                                    Text(
+                                      'No cities found',
+                                      style: TextStyle(color: Colors.grey.shade600),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            )
+                          : ListView.builder(
+                              shrinkWrap: true,
+                              itemCount: filteredCities.length,
+                              itemBuilder: (context, index) {
+                                final city = filteredCities[index];
+                                return ListTile(
+                                  leading: CircleAvatar(
+                                    backgroundColor: Colors.blue.shade100,
+                                    child: Icon(
+                                      Icons.location_on,
+                                      color: Colors.blue.shade700,
+                                      size: 20,
+                                    ),
+                                  ),
+                                  title: Text(
+                                    city.name,
+                                    style: const TextStyle(fontWeight: FontWeight.w500),
+                                  ),
+                                  subtitle: Text(
+                                    '${city.coordinates.latitude.toStringAsFixed(4)}, ${city.coordinates.longitude.toStringAsFixed(4)}',
+                                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                                  ),
+                                  trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                                  onTap: () => Navigator.pop(context, city),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (selectedCity != null) {
+      await _zoomToCity(selectedCity);
+    }
+  }
+
+  // Zoom map to a specific city
+  Future<void> _zoomToCity(City city) async {
+    debugPrint("🏙️ Zooming to city: ${city.name}");
+
+    if (_gController != null) {
+      await _gController!.animateCamera(
+        gmap.CameraUpdate.newCameraPosition(
+          gmap.CameraPosition(
+            target: gmap.LatLng(city.coordinates.latitude, city.coordinates.longitude),
+            zoom: city.zoomLevel,
+          ),
+        ),
+      );
+
+      // Show confirmation
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.location_city, color: Colors.white, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('Centered on ${city.name}'),
+                ),
+              ],
+            ),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } else {
+      debugPrint("❌ Map controller not available");
+    }
+  }
+
   // 2) Unified map tap handler (used by GoogleMap onTap)
   void _handleTap(ll.LatLng point) {
     if (isDrawing) {
@@ -890,24 +1400,45 @@ class _MapScreenState extends State<MapScreen> {
       final pos = await Geolocator.getCurrentPosition();
       if (!mounted) return;
 
+      // Zoom to level 18 for precise location (was 14)
       if (_useGoogle && _gController != null) {
         await _gController!.animateCamera(
-          gmap.CameraUpdate.newLatLngZoom(gmap.LatLng(pos.latitude, pos.longitude), 14),
+          gmap.CameraUpdate.newLatLngZoom(gmap.LatLng(pos.latitude, pos.longitude), 18),
         );
       } else {
-        mapController.move(ll.LatLng(pos.latitude, pos.longitude), 14);
+        mapController.move(ll.LatLng(pos.latitude, pos.longitude), 18);
       }
     } catch (e) {
       debugPrint("Location error: $e");
     }
   }
 
-  // 5) Region properties bottom sheet (invoked by “Show properties”)
+  // 4b) Calculate polygon center from list of points (for address auto-fill)
+  ll.LatLng _calculatePolygonCenter(List<ll.LatLng> points) {
+    if (points.isEmpty) {
+      return ll.LatLng(0, 0);
+    }
+
+    double totalLat = 0;
+    double totalLng = 0;
+
+    for (var point in points) {
+      totalLat += point.latitude;
+      totalLng += point.longitude;
+    }
+
+    return ll.LatLng(
+      totalLat / points.length,
+      totalLng / points.length,
+    );
+  }
+
+  // 5) Region properties bottom sheet (invoked by "Show properties")
   void _showRegionSheet(String idRaw) {
     final displayId = _prettyAdmId(idRaw);
     final rings = _regionRingsLL(idRaw);
 
-    bool _touchesRegion(List<ll.LatLng> poly) {
+    bool touchesRegion(List<ll.LatLng> poly) {
       if (poly.isEmpty) return false;
       final c = _areaCentroid(poly);
       for (final r in rings) {
@@ -921,7 +1452,7 @@ class _MapScreenState extends State<MapScreen> {
 
     final myIdx = <int>[];
     for (int i = 0; i < userPolygons.length; i++) {
-      if (_touchesRegion(userPolygons[i])) myIdx.add(i);
+      if (touchesRegion(userPolygons[i])) myIdx.add(i);
     }
 
     showModalBottomSheet(
@@ -1170,7 +1701,7 @@ class _MapScreenState extends State<MapScreen> {
 
       final parsedPolygons = <List<ll.LatLng>>[]; // only used for FlutterMap path
 
-      bool _skipUSFeature(Map<String, dynamic> f) {
+      bool skipUSFeature(Map<String, dynamic> f) {
         if (!isUS) return false;
         final props = (f['properties'] ?? {}) as Map<String, dynamic>;
 
@@ -1194,7 +1725,7 @@ class _MapScreenState extends State<MapScreen> {
       }
 
       for (final f in features) {
-        if (_skipUSFeature(f)) continue;
+        if (skipUSFeature(f)) continue;
 
         final geometry = f['geometry'] as Map<String, dynamic>;
         final type = geometry['type'] as String;
@@ -1280,7 +1811,7 @@ class _MapScreenState extends State<MapScreen> {
     final ownerUid = widget.highlightOwnerUid ?? user!.uid;
 
     // IMPORTANT: resolve the same region id we saved with
-    String _regionIdFromGeojsonPath(String? p) {
+    String regionIdFromGeojsonPath(String? p) {
       if (p == null || p.isEmpty) return canonicalizeRegionId(widget.regionId);
       final m = RegExp(r'([^/\\]+)\.geojson$', caseSensitive: false).firstMatch(p);
       if (m != null && m.groupCount >= 1) {
@@ -1289,7 +1820,7 @@ class _MapScreenState extends State<MapScreen> {
       return canonicalizeRegionId(widget.regionId);
     }
 
-    final regIdCanonical = _regionIdFromGeojsonPath(widget.geojsonPath);
+    final regIdCanonical = regionIdFromGeojsonPath(widget.geojsonPath);
 
     debugPrint('🔎 load polys for uid=$ownerUid, region=$regIdCanonical');
 
@@ -1299,7 +1830,7 @@ class _MapScreenState extends State<MapScreen> {
     final Map<String, DocumentSnapshot> othersById = {};
     final Map<String, List<ll.LatLng>> othersPoly = {};
 
-    List<ll.LatLng> _coordsFromDoc(DocumentSnapshot d) {
+    List<ll.LatLng> coordsFromDoc(DocumentSnapshot d) {
       final data = (d.data() ?? {}) as Map<String, dynamic>;
       final coords = (data['coordinates'] as List? ?? const []);
       return coords.map<ll.LatLng>((c) {
@@ -1308,7 +1839,7 @@ class _MapScreenState extends State<MapScreen> {
       }).toList();
     }
 
-    void _insertPreferringADM1({
+    void insertPreferringADM1({
       required Map<String, DocumentSnapshot> docs,
       required Map<String, List<ll.LatLng>> polys,
       required DocumentSnapshot d,
@@ -1320,14 +1851,14 @@ class _MapScreenState extends State<MapScreen> {
       final isADM1 = (data['admLevel'] ?? '') == 'ADM1';
       if (!docs.containsKey(id)) {
         docs[id] = d;
-        polys[id] = _coordsFromDoc(d);
+        polys[id] = coordsFromDoc(d);
         return;
       }
       final prev = (docs[id]!.data() ?? {}) as Map<String, dynamic>;
       final prevIsADM1 = (prev['admLevel'] ?? '') == 'ADM1';
       if (!prevIsADM1 && isADM1) {
         docs[id] = d;
-        polys[id] = _coordsFromDoc(d);
+        polys[id] = coordsFromDoc(d);
       }
     }
 
@@ -1347,7 +1878,7 @@ class _MapScreenState extends State<MapScreen> {
         final props =
             await adm.reference.collection('properties').orderBy('updatedAt', descending: true).get();
         for (final d in props.docs) {
-          _insertPreferringADM1(docs: userById, polys: userPoly, d: d);
+          insertPreferringADM1(docs: userById, polys: userPoly, d: d);
         }
       }
 
@@ -1361,7 +1892,7 @@ class _MapScreenState extends State<MapScreen> {
           .orderBy('updatedAt', descending: true)
           .get();
       for (final d in userAdm0Snap.docs) {
-        _insertPreferringADM1(docs: userById, polys: userPoly, d: d);
+        insertPreferringADM1(docs: userById, polys: userPoly, d: d);
       }
 
       // ---------- OTHERS (public): ADM1 ----------
@@ -1374,7 +1905,7 @@ class _MapScreenState extends State<MapScreen> {
             .where('ownerUid', isNotEqualTo: ownerUid)
             .get();
         for (final d in others.docs) {
-          _insertPreferringADM1(docs: othersById, polys: othersPoly, d: d);
+          insertPreferringADM1(docs: othersById, polys: othersPoly, d: d);
         }
       }
 
@@ -1386,11 +1917,11 @@ class _MapScreenState extends State<MapScreen> {
           .where('ownerUid', isNotEqualTo: ownerUid)
           .get();
       for (final d in othersAdm0Snap.docs) {
-        _insertPreferringADM1(docs: othersById, polys: othersPoly, d: d);
+        insertPreferringADM1(docs: othersById, polys: othersPoly, d: d);
       }
 
       // ---- Convert to ordered lists (newest first by updatedAt/timestamp) ----
-      int _cmpDocs(DocumentSnapshot a, DocumentSnapshot b) {
+      int cmpDocs(DocumentSnapshot a, DocumentSnapshot b) {
         final da = (a.data() ?? {}) as Map<String, dynamic>;
         final db = (b.data() ?? {}) as Map<String, dynamic>;
         final atA = da['updatedAt'] ?? da['timestamp'];
@@ -1402,8 +1933,8 @@ class _MapScreenState extends State<MapScreen> {
         return tb.compareTo(ta);
       }
 
-      final userDocsOrdered = userById.values.toList()..sort(_cmpDocs);
-      final othersDocsOrdered = othersById.values.toList()..sort(_cmpDocs);
+      final userDocsOrdered = userById.values.toList()..sort(cmpDocs);
+      final othersDocsOrdered = othersById.values.toList()..sort(cmpDocs);
 
       final newUserPolys = <List<ll.LatLng>>[];
       final newUserDocs = <DocumentSnapshot>[];
@@ -1456,7 +1987,7 @@ class _MapScreenState extends State<MapScreen> {
 
     final batch = fs.batch();
     for (final d in q.docs) {
-      final data = d.data() as Map<String, dynamic>;
+      final data = d.data();
       final base = (data['adm1Base'] ?? '').toString();
       final adm1Id = (data['adm1Id'] ?? '').toString();
       if (base.isEmpty) continue;
@@ -1493,7 +2024,7 @@ class _MapScreenState extends State<MapScreen> {
     setState(() => _isSaving = true);
 
     // --- resolve regionId from geojson path first (prevents Cameroon/Nigeria mixups)
-    String _regionIdFromGeojsonPath(String? p) {
+    String regionIdFromGeojsonPath(String? p) {
       if (p == null || p.isEmpty) return canonicalizeRegionId(widget.regionId);
       final m = RegExp(r'([^/\\]+)\.geojson$', caseSensitive: false).firstMatch(p);
       if (m != null && m.groupCount >= 1) {
@@ -1525,62 +2056,351 @@ class _MapScreenState extends State<MapScreen> {
       aliasKey = _aliasKeyFrom(alias);
     }
 
-    // ---- Confirm dialog
+    // ---- Confirm dialog (using Dialog instead of AlertDialog to avoid intrinsic width issues)
     final ok = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Save Property"),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text("Title ID: $llid"),
-            TextField(
-              controller: descriptionController,
-              decoration: const InputDecoration(labelText: "Description"),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => Dialog(
+          child: Container(
+            width: 400,
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.9, // Max 90% of screen height
             ),
-          ],
+            padding: const EdgeInsets.all(20),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                Text(
+                  "Save Property",
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 16),
+                Text("Title ID: $llid"),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: descriptionController,
+                  decoration: const InputDecoration(
+                    labelText: "Description",
+                    border: OutlineInputBorder(),
+                  ),
+                  maxLines: 3,
+                ),
+                const SizedBox(height: 16),
+                // Structured address input with auto-fill from polygon center
+                AddressInputWidget(
+                  initialAddress: _propertyAddress,
+                  latitude: _calculatePolygonCenter(currentPolygonPoints).latitude,
+                  longitude: _calculatePolygonCenter(currentPolygonPoints).longitude,
+                  onAddressChanged: (PropertyAddress address) {
+                    _propertyAddress = address;
+                  },
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () async {
+                          final images = await _imagePicker.pickMultiImage();
+                          if (images.isNotEmpty) {
+                            setState(() {
+                              _selectedImages.addAll(images);
+                            });
+                          }
+                        },
+                        icon: const Icon(Icons.add_photo_alternate),
+                        label: Text("Add Photos (${_selectedImages.length})"),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () async {
+                          final image = await _imagePicker.pickImage(source: ImageSource.camera);
+                          if (image != null) {
+                            setState(() {
+                              _selectedImages.add(image);
+                            });
+                          }
+                        },
+                        icon: const Icon(Icons.camera_alt),
+                        label: const Text("Take Photo"),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green.shade700,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                if (_selectedImages.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    "Selected Photos (${_selectedImages.length})",
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    height: 100,
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey.shade300),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.all(8),
+                      itemCount: _selectedImages.length,
+                      itemBuilder: (context, index) {
+                        final image = _selectedImages[index];
+                        return Container(
+                          width: 80,
+                          height: 80,
+                          margin: const EdgeInsets.only(right: 8),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.grey.shade400, width: 2),
+                          ),
+                          child: Stack(
+                            children: [
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(6),
+                                child: SizedBox(
+                                  width: 80,
+                                  height: 80,
+                                  child: kIsWeb
+                                      ? Image.network(
+                                          image.path,
+                                          fit: BoxFit.cover,
+                                          errorBuilder: (context, error, stackTrace) {
+                                            return Container(
+                                              color: Colors.grey.shade200,
+                                              child: Column(
+                                                mainAxisAlignment: MainAxisAlignment.center,
+                                                children: [
+                                                  const Icon(Icons.image, size: 24),
+                                                  const SizedBox(height: 4),
+                                                  Text(
+                                                    image.name.length > 10
+                                                        ? '${image.name.substring(0, 10)}...'
+                                                        : image.name,
+                                                    style: const TextStyle(fontSize: 8),
+                                                    textAlign: TextAlign.center,
+                                                  ),
+                                                ],
+                                              ),
+                                            );
+                                          },
+                                        )
+                                      : Image.file(
+                                          File(image.path),
+                                          fit: BoxFit.cover,
+                                          errorBuilder: (context, error, stackTrace) {
+                                            return Container(
+                                              color: Colors.grey.shade200,
+                                              child: Column(
+                                                mainAxisAlignment: MainAxisAlignment.center,
+                                                children: [
+                                                  const Icon(Icons.image, size: 24),
+                                                  const SizedBox(height: 4),
+                                                  Text(
+                                                    image.name.length > 10
+                                                        ? '${image.name.substring(0, 10)}...'
+                                                        : image.name,
+                                                    style: const TextStyle(fontSize: 8),
+                                                    textAlign: TextAlign.center,
+                                                  ),
+                                                ],
+                                              ),
+                                            );
+                                          },
+                                        ),
+                                ),
+                              ),
+                              // Remove button
+                              Positioned(
+                                top: 2,
+                                right: 2,
+                                child: GestureDetector(
+                                  onTap: () {
+                                    setState(() {
+                                      _selectedImages.removeAt(index);
+                                    });
+                                  },
+                                  child: Container(
+                                    width: 24,
+                                    height: 24,
+                                    decoration: BoxDecoration(
+                                      color: Colors.red.shade600,
+                                      shape: BoxShape.circle,
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withValues(alpha: 0.3),
+                                          blurRadius: 4,
+                                          offset: const Offset(0, 2),
+                                        ),
+                                      ],
+                                    ),
+                                    child: const Icon(
+                                      Icons.close,
+                                      color: Colors.white,
+                                      size: 16,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text("Cancel"),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text("Save"),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Cancel")),
-          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text("Save")),
-        ],
       ),
-    );
+    ),
+  );
     if (ok != true) {
+      _selectedImages.clear();
       if (mounted) setState(() => _isSaving = false);
       return;
     }
 
     // ---- Capture inputs BEFORE clearing
     final capturedDescription = descriptionController.text.trim();
+    final capturedAddress = _propertyAddress; // Structured address object
     final capturedWallet = await getCurrentUserWallet() ?? '';
+    final capturedImages = List<XFile>.from(_selectedImages);
+
+    debugPrint("💾 Starting save operation...");
+    debugPrint("💾 Description: $capturedDescription");
+    debugPrint("💾 Address: ${capturedAddress?.toDisplayString() ?? 'No address'}");
+    debugPrint("💾 Images: ${capturedImages.length}");
 
     try {
       // 1) Close & quantize ring
+      debugPrint("💾 Step 1: Closing and quantizing ring...");
       final closed = _ensureClosed(currentPolygonPoints);
+      debugPrint("✅ Step 1 complete: ${closed.length} points");
 
       // 2) Centroid (and basic checks)
+      debugPrint("💾 Step 2: Calculating centroid...");
       final centroid = _calculateCentroid(closed);
+      debugPrint("✅ Step 2 complete: centroid at ${centroid.latitude}, ${centroid.longitude}");
 
       // 3) Detect enclosing ADM1 (base id)
+      debugPrint("💾 Step 3: Detecting ADM1 region...");
       final adm1Id = _pickAdm1ForPoint(centroid);
       if (adm1Id == null) {
+        debugPrint("❌ No ADM1 region found for centroid");
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text("Draw your polygon inside a state/province boundary.")),
         );
         return;
       }
       final adm1Base = _admBaseOf(adm1Id);
+      debugPrint("✅ Step 3 complete: adm1Id=$adm1Id, adm1Base=$adm1Base");
 
       // 4) Canonical region ids/names — derive from geojson path as source of truth
-      final regionIdCanonical = _regionIdFromGeojsonPath(widget.geojsonPath);
+      debugPrint("💾 Step 4: Getting region IDs...");
+      final regionIdCanonical = regionIdFromGeojsonPath(widget.geojsonPath);
       final displayRegionName = currentRegion?.name ?? widget.regionId;
+      debugPrint("✅ Step 4 complete: regionId=$regionIdCanonical, name=$displayRegionName");
 
       // 5) Area & bbox
+      debugPrint("💾 Step 5: Calculating area and bbox...");
       final areaSqKm = calculateArea(closed);
       final bbox = _bboxOf(closed);
+      debugPrint("✅ Step 5 complete: area=$areaSqKm km²");
+
+      // 5.5) Upload photos to Firebase Storage with timeout
+      final List<String> photoUrls = [];
+      if (capturedImages.isNotEmpty) {
+        debugPrint("📸 Step 5.5: Starting upload of ${capturedImages.length} photos with 30s timeout per photo...");
+
+        for (int i = 0; i < capturedImages.length; i++) {
+          try {
+            final file = capturedImages[i];
+            debugPrint("📸 Uploading photo $i: ${file.name}");
+
+            // Get file extension safely
+            String extension = 'jpg';
+            if (file.name.contains('.')) {
+              extension = file.name.split('.').last.toLowerCase();
+            }
+
+            final timestamp = DateTime.now().millisecondsSinceEpoch;
+            final storagePath = 'properties/$llid/photo_${timestamp}_$i.$extension';
+            final storageRef = FirebaseStorage.instance.ref().child(storagePath);
+
+            debugPrint("📸 Storage path: $storagePath");
+
+            // Add timeout to prevent hanging
+            if (kIsWeb) {
+              debugPrint("📸 Reading file bytes for web upload...");
+              final bytes = await file.readAsBytes().timeout(
+                const Duration(seconds: 10),
+                onTimeout: () => throw TimeoutException('Reading file took too long'),
+              );
+              debugPrint("📸 Read ${bytes.length} bytes, starting upload...");
+              final uploadTask = await storageRef.putData(bytes).timeout(
+                const Duration(seconds: 30),
+                onTimeout: () => throw TimeoutException('Upload took too long'),
+              );
+              final downloadUrl = await uploadTask.ref.getDownloadURL().timeout(
+                const Duration(seconds: 10),
+                onTimeout: () => throw TimeoutException('Getting download URL took too long'),
+              );
+              photoUrls.add(downloadUrl);
+              debugPrint("✅ Photo $i uploaded successfully");
+            } else {
+              debugPrint("📸 Starting file upload for mobile...");
+              final uploadTask = await storageRef.putFile(File(file.path)).timeout(
+                const Duration(seconds: 30),
+                onTimeout: () => throw TimeoutException('Upload took too long'),
+              );
+              final downloadUrl = await uploadTask.ref.getDownloadURL().timeout(
+                const Duration(seconds: 10),
+                onTimeout: () => throw TimeoutException('Getting download URL took too long'),
+              );
+              photoUrls.add(downloadUrl);
+              debugPrint("✅ Photo $i uploaded successfully");
+            }
+          } on TimeoutException catch (e) {
+            debugPrint("⏱️ Photo $i upload timed out: $e");
+            debugPrint("⚠️ Skipping this photo and continuing...");
+          } catch (e, stackTrace) {
+            debugPrint("❌ Failed to upload photo $i: $e");
+            debugPrint("❌ Stack trace: $stackTrace");
+            // Continue with other photos even if one fails
+          }
+        }
+        debugPrint("📸 Upload complete. ${photoUrls.length} out of ${capturedImages.length} photos uploaded successfully.");
+      } else {
+        debugPrint("📸 No photos to upload, skipping step 5.5");
+      }
 
       // 6) Build doc body (normalized fields)
+      debugPrint("💾 Step 6: Building document data...");
       final fs = FirebaseFirestore.instance;
       final now = FieldValue.serverTimestamp();
       final propId = llid;
@@ -1590,6 +2410,11 @@ class _MapScreenState extends State<MapScreen> {
         "alias": alias,           // e.g. "#LTN2460"
         "aliasKey": aliasKey,     // e.g. "LTN2460"
         "description": capturedDescription,
+
+        // Structured address data (for blockchain and database)
+        "address": capturedAddress?.toJson(),  // Full structured address
+        "addressString": capturedAddress?.toDisplayString() ?? '',  // Formatted string for display
+
         "wallet_address": capturedWallet,
         "ownerUid": user!.uid,
 
@@ -1605,12 +2430,16 @@ class _MapScreenState extends State<MapScreen> {
         "bbox": bbox,
         "area_sqkm": areaSqKm,
 
+        "photoUrls": photoUrls,
+
         "createdAt": now,
         "updatedAt": now,
         "timestamp": now, // legacy UI
       };
+      debugPrint("✅ Step 6 complete: baseData has ${baseData.length} fields, ${photoUrls.length} photos");
 
       // 7) Firestore writes (ensure ADM1 parents exist) + ADM0 copies + legacy flat
+      debugPrint("💾 Step 7: Preparing batch write to Firestore...");
       final batch = fs.batch();
 
       // Ensure country parent exists (helps console navigation)
@@ -1666,10 +2495,14 @@ class _MapScreenState extends State<MapScreen> {
       final legacyFlat = fs.doc("users/${user!.uid}/regions/$propId");
       batch.set(legacyFlat, {...baseData, "migratedFromFlat": true}, SetOptions(merge: true));
 
+      debugPrint("💾 Committing batch write to Firestore...");
       await batch.commit();
+      debugPrint("✅ Batch write completed successfully");
 
       // Re-read authoritative user ADM1 copy & update local UI
+      debugPrint("💾 Reading back saved document...");
       final newSnap = await userAdm1Doc.get();
+      debugPrint("✅ Document read successfully");
       if (!mounted) return;
       setState(() {
         userPolygons.add(closed);
@@ -1681,28 +2514,41 @@ class _MapScreenState extends State<MapScreen> {
       });
 
       descriptionController.clear();
+      _propertyAddress = null; // Clear structured address
+      _selectedImages.clear();
 
       _admCtl.setShading(_regionFillVisible);
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Property saved to state/province & country.")),
+        SnackBar(
+          content: Text(
+            photoUrls.isNotEmpty
+                ? "Property saved with ${photoUrls.length} photo(s)!"
+                : "Property saved to state/province & country."
+          ),
+        ),
       );
 
       // 8) Fire & forget: blockchain
       // ignore: unawaited_futures
-      saveToBlockchainSilent(llid, closed, capturedWallet, capturedDescription);
+      saveToBlockchainSilent(llid, closed, capturedWallet, capturedDescription, capturedAddress);
 
       // 9) Refresh lists in background (optional)
       // ignore: unawaited_futures
       _loadUserSavedPolygons();
-    } catch (e) {
+    } catch (e, stackTrace) {
       debugPrint("❌ Save failed: $e");
+      debugPrint("❌ Stack trace: $stackTrace");
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Failed to save: $e")),
+          SnackBar(
+            content: Text("Failed to save: $e"),
+            duration: const Duration(seconds: 5),
+          ),
         );
       }
     } finally {
+      debugPrint("💾 Save operation completed (success or failure)");
       if (mounted) setState(() => _isSaving = false);
     }
   }
@@ -1898,10 +2744,45 @@ class _MapScreenState extends State<MapScreen> {
         // Build polygons with caching
         final polys = _buildPolygonSet(admPolys, isUS);
 
+        // Build markers for polygon points when drawing
+        final Set<gmap.Marker> markers = {};
+        if (isDrawing && currentPolygonPoints.isNotEmpty) {
+          for (int i = 0; i < currentPolygonPoints.length; i++) {
+            final point = currentPolygonPoints[i];
+            markers.add(
+              gmap.Marker(
+                markerId: gmap.MarkerId('point_$i'),
+                position: gmap.LatLng(point.latitude, point.longitude),
+                draggable: true,
+                onDragEnd: (newPosition) {
+                  setState(() {
+                    currentPolygonPoints[i] = ll.LatLng(
+                      newPosition.latitude,
+                      newPosition.longitude,
+                    );
+                  });
+                },
+                onTap: () {
+                  // Show option to delete this point
+                  _showPointOptions(i);
+                },
+                icon: gmap.BitmapDescriptor.defaultMarkerWithHue(
+                  i == 0 ? gmap.BitmapDescriptor.hueGreen : gmap.BitmapDescriptor.hueRed,
+                ),
+                infoWindow: gmap.InfoWindow(
+                  title: i == 0 ? 'Start Point' : 'Point ${i + 1}',
+                  snippet: '${point.latitude.toStringAsFixed(6)}, ${point.longitude.toStringAsFixed(6)}',
+                ),
+              ),
+            );
+          }
+        }
+
         return gmap.GoogleMap(
           mapType: showSatellite ? gmap.MapType.hybrid : gmap.MapType.normal,
           initialCameraPosition: camPos,
           polygons: polys,
+          markers: markers,
           myLocationEnabled: false,
           myLocationButtonEnabled: false,
           zoomControlsEnabled: false,
@@ -2071,6 +2952,7 @@ class _MapScreenState extends State<MapScreen> {
     List<ll.LatLng> points,
     String wallet,
     String description,
+    PropertyAddress? address,
   ) async {
     final url = Uri.parse('$_apiBase/api/landledger/polygons');
     try {
@@ -2087,6 +2969,8 @@ class _MapScreenState extends State<MapScreen> {
                 points.map((p) => {"lat": p.latitude, "lng": p.longitude}).toList(),
             "areaSqKm": calculateArea(points),
             "description": description,
+            "address": address?.toJson(),
+            "addressString": address?.toDisplayString() ?? '',
           }
         }),
       );
@@ -2167,6 +3051,67 @@ class _MapScreenState extends State<MapScreen> {
     return Stack(
       children: [
         if (_showPolygonInfo && _selectedPolygonDoc != null) buildPolygonInfoCard(),
+
+        // Coordinate info panel at top left when drawing
+        if (isDrawing)
+          Positioned(
+            top: 16,
+            left: 16,
+            child: Card(
+              elevation: 8,
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                constraints: const BoxConstraints(maxWidth: 250),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.draw, size: 18, color: Colors.blue),
+                        const SizedBox(width: 8),
+                        const Text(
+                          'Drawing Mode',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                        ),
+                      ],
+                    ),
+                    const Divider(height: 16),
+                    Text(
+                      'Points: ${currentPolygonPoints.length}',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    if (currentPolygonPoints.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'Last: ${currentPolygonPoints.last.latitude.toStringAsFixed(6)}, ${currentPolygonPoints.last.longitude.toStringAsFixed(6)}',
+                        style: const TextStyle(fontSize: 10, color: Colors.grey),
+                      ),
+                    ],
+                    if (currentPolygonPoints.length >= 3) ...[
+                      const SizedBox(height: 8),
+                      Builder(builder: (context) {
+                        final areaSqM = calculateArea(currentPolygonPoints) * 1e6;
+                        final display = areaSqM >= 100000
+                            ? "${(areaSqM / 1e6).toStringAsFixed(2)} km²"
+                            : "${areaSqM.toStringAsFixed(0)} m²";
+                        return Text(
+                          'Area: $display',
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.green),
+                        );
+                      }),
+                    ],
+                    const SizedBox(height: 8),
+                    const Text(
+                      '• Tap map to add points\n• Drag markers to adjust\n• Tap markers for options',
+                      style: TextStyle(fontSize: 10, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
         Positioned(
           bottom: 100,
           right: 16,
@@ -2175,59 +3120,167 @@ class _MapScreenState extends State<MapScreen> {
               FloatingActionButton(
                 heroTag: "btn-center",
                 mini: true,
-                child: const Icon(Icons.my_location),
                 onPressed: centerToUserLocation,
+                child: const Icon(Icons.my_location),
               ),
               const SizedBox(height: 8),
-              if (currentPolygonPoints.length >= 3 && isDrawing)
-                Column(
-                  children: [
-                    Builder(builder: (context) {
-                      final areaSqM = calculateArea(currentPolygonPoints) * 1e6;
-                      final display = areaSqM >= 100000
-                          ? "${(areaSqM / 1e6).toStringAsFixed(2)} km²"
-                          : "${areaSqM.toStringAsFixed(0)} m²";
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 4),
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.75),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          display,
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+              // City selector button (only when NOT drawing)
+              if (!isDrawing)
+                FloatingActionButton(
+                  heroTag: "btn-city-selector",
+                  mini: true,
+                  backgroundColor: Colors.blue.shade700,
+                  onPressed: _showCitySelector,
+                  child: const Icon(Icons.location_city, size: 20),
+                ),
+              if (!isDrawing)
+                const SizedBox(height: 8),
+              // Undo button when drawing
+              if (isDrawing && currentPolygonPoints.isNotEmpty)
+                FloatingActionButton(
+                  heroTag: "btn-undo",
+                  mini: true,
+                  backgroundColor: Colors.orange,
+                  onPressed: () {
+                    setState(() {
+                      if (currentPolygonPoints.isNotEmpty) {
+                        currentPolygonPoints.removeLast();
+                      }
+                    });
+                  },
+                  child: const Icon(Icons.undo),
+                ),
+              if (isDrawing && currentPolygonPoints.isNotEmpty)
+                const SizedBox(height: 8),
+              // Clear all button when drawing
+              if (isDrawing && currentPolygonPoints.length > 1)
+                FloatingActionButton(
+                  heroTag: "btn-clear",
+                  mini: true,
+                  backgroundColor: Colors.red.shade700,
+                  onPressed: () async {
+                    final confirm = await showDialog<bool>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('Clear All Points?'),
+                        content: Text('Remove all ${currentPolygonPoints.length} points?'),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: const Text('Cancel'),
+                          ),
+                          ElevatedButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                            child: const Text('Clear All'),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (confirm == true) {
+                      setState(() {
+                        currentPolygonPoints.clear();
+                      });
+                    }
+                  },
+                  child: const Icon(Icons.clear_all),
+                ),
+              if (isDrawing && currentPolygonPoints.length > 1)
+                const SizedBox(height: 8),
+              // Drawing mode buttons
+              if (isDrawing) ...[
+                // Cancel drawing button (always visible when drawing)
+                FloatingActionButton(
+                  heroTag: "btn-cancel-draw",
+                  backgroundColor: Colors.grey.shade700,
+                  child: const Icon(Icons.close),
+                  onPressed: () async {
+                    // Ask for confirmation if there are points
+                    if (currentPolygonPoints.isNotEmpty) {
+                      final confirm = await showDialog<bool>(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: const Text('Cancel Drawing?'),
+                          content: Text(
+                            'You have ${currentPolygonPoints.length} point(s). '
+                            'All progress will be lost.',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              child: const Text('Keep Drawing'),
+                            ),
+                            ElevatedButton(
+                              onPressed: () => Navigator.pop(context, true),
+                              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                              child: const Text('Cancel & Exit'),
+                            ),
+                          ],
                         ),
                       );
-                    }),
-                    FloatingActionButton(
-                      heroTag: "btn-save",
-                      backgroundColor: Colors.red,
-                      child: _isSaving
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                            )
-                          : const Icon(Icons.save),
-                      onPressed: _isSaving ? null : savePolygon,
-                    ),
-                  ],
-                )
-              else
+                      if (confirm != true) return;
+                    }
+
+                    setState(() {
+                      isDrawing = false;
+                      currentPolygonPoints = [];
+                      selectedPolygon = null;
+                      _showPolygonInfo = false;
+                    });
+                    _admCtl.setShading(_regionFillVisible);
+                  },
+                ),
+                const SizedBox(height: 8),
+                // Save button (only when 3+ points)
+                if (currentPolygonPoints.length >= 3)
+                  Column(
+                    children: [
+                      Builder(builder: (context) {
+                        final areaSqM = calculateArea(currentPolygonPoints) * 1e6;
+                        final display = areaSqM >= 100000
+                            ? "${(areaSqM / 1e6).toStringAsFixed(2)} km²"
+                            : "${areaSqM.toStringAsFixed(0)} m²";
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 4),
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.75),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            display,
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                          ),
+                        );
+                      }),
+                      FloatingActionButton(
+                        heroTag: "btn-save",
+                        backgroundColor: Colors.green,
+                        onPressed: _isSaving ? null : savePolygon,
+                        child: _isSaving
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              )
+                            : const Icon(Icons.save),
+                      ),
+                    ],
+                  ),
+              ] else
                 FloatingActionButton(
                   heroTag: "btn-draw-toggle",
-                  backgroundColor: isDrawing ? Colors.red : const Color.fromARGB(255, 2, 76, 63),
-                  child: Icon(isDrawing ? Icons.close : Icons.edit_location_alt),
+                  backgroundColor: const Color.fromARGB(255, 2, 76, 63),
+                  child: const Icon(Icons.edit_location_alt),
                   onPressed: () async {
                     final ok = await confirmOnChain(context,
                       title: 'Draw Polygon',
                       summary: 'You are about to draw a polygon for a new parcel. This will lead to a signed transaction.');
                     if (!ok) return;
- 
+
                     setState(() {
-                      isDrawing = !isDrawing;
+                      isDrawing = true;
                       currentPolygonPoints = [];
                       selectedPolygon = null;
                       _showPolygonInfo = false;
@@ -2294,6 +3347,105 @@ class _MapScreenState extends State<MapScreen> {
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 8),
+                // Address display (structured)
+                _buildAddressDisplay(data),
+                const SizedBox(height: 8),
+                // Photo gallery
+                if (data['photoUrls'] != null && (data['photoUrls'] as List).isNotEmpty)
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Photos (${(data['photoUrls'] as List).length}):',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        height: 200,
+                        child: PageView.builder(
+                          itemCount: (data['photoUrls'] as List).length,
+                          itemBuilder: (context, index) {
+                            final photoUrl = (data['photoUrls'] as List)[index];
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                              child: Stack(
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Image.network(
+                                      photoUrl,
+                                      width: double.infinity,
+                                      height: 200,
+                                      fit: BoxFit.cover,
+                                      loadingBuilder: (context, child, loadingProgress) {
+                                        if (loadingProgress == null) return child;
+                                        return Center(
+                                          child: CircularProgressIndicator(
+                                            value: loadingProgress.expectedTotalBytes != null
+                                                ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!
+                                                : null,
+                                          ),
+                                        );
+                                      },
+                                      errorBuilder: (context, error, stackTrace) {
+                                        return Container(
+                                          color: Colors.grey[300],
+                                          child: const Center(
+                                            child: Icon(Icons.error_outline, size: 50, color: Colors.red),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                  // Photo counter badge
+                                  Positioned(
+                                    bottom: 8,
+                                    right: 8,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black.withValues(alpha: 0.6),
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Text(
+                                        '${index + 1}/${(data['photoUrls'] as List).length}',
+                                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                  ),
+                // Edit Photos button - only for property owner
+                const SizedBox(height: 8),
+                if (data['ownerUid'] == user?.uid)
+                  ElevatedButton.icon(
+                    onPressed: () => _editPropertyPhotos(data),
+                    icon: const Icon(Icons.photo_library, size: 18),
+                    label: Text(
+                      data['photoUrls'] != null && (data['photoUrls'] as List).isNotEmpty
+                          ? 'Edit Photos (${(data['photoUrls'] as List).length})'
+                          : 'Add Photos'
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    ),
+                  )
+                else
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: Text(
+                      'Only the property owner can edit photos',
+                      style: TextStyle(fontSize: 12, color: Colors.grey, fontStyle: FontStyle.italic),
+                    ),
+                  ),
+                const SizedBox(height: 8),
                 Text(
                   'Wallet: ${formatFriendlyWalletSync(data['wallet_address'] ?? '')}',
                   style: Theme.of(context).textTheme.bodyMedium,
@@ -2318,6 +3470,472 @@ class _MapScreenState extends State<MapScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _editPropertyPhotos(Map<String, dynamic> propertyData) async {
+    debugPrint("📸 Opening photo editor for property: ${propertyData['id']}");
+
+    // ✅ Permission check - only owner can edit photos
+    if (propertyData['ownerUid'] != user?.uid) {
+      debugPrint("❌ Permission denied: User ${user?.uid} cannot edit photos for property owned by ${propertyData['ownerUid']}");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Only the property owner can edit photos'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+
+    // Get existing photo URLs
+    final existingPhotoUrls = propertyData['photoUrls'] != null
+        ? List<String>.from(propertyData['photoUrls'] as List)
+        : <String>[];
+
+    // Track which existing photos to keep and which new photos to add
+    List<String> photosToKeep = List.from(existingPhotoUrls);
+    List<XFile> newPhotosToAdd = [];
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => Dialog(
+          child: Container(
+            width: 400,
+            padding: const EdgeInsets.all(20),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        "Edit Photos",
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close),
+                        onPressed: () => Navigator.pop(context, false),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Text("Property: ${propertyData['title_number'] ?? 'Unknown'}"),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () async {
+                            final images = await _imagePicker.pickMultiImage();
+                            if (images.isNotEmpty) {
+                              setState(() {
+                                newPhotosToAdd.addAll(images);
+                              });
+                            }
+                          },
+                          icon: const Icon(Icons.add_photo_alternate),
+                          label: const Text("Add Photos"),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () async {
+                            final image = await _imagePicker.pickImage(source: ImageSource.camera);
+                            if (image != null) {
+                              setState(() {
+                                newPhotosToAdd.add(image);
+                              });
+                            }
+                          },
+                          icon: const Icon(Icons.camera_alt),
+                          label: const Text("Take Photo"),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green.shade700,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Show existing photos
+                  if (photosToKeep.isNotEmpty) ...[
+                    Text(
+                      "Existing Photos (${photosToKeep.length})",
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      height: 100,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.blue.shade300),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: ListView.builder(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.all(8),
+                        itemCount: photosToKeep.length,
+                        itemBuilder: (context, index) {
+                          final photoUrl = photosToKeep[index];
+                          return Container(
+                            width: 80,
+                            height: 80,
+                            margin: const EdgeInsets.only(right: 8),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.blue.shade400, width: 2),
+                            ),
+                            child: Stack(
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(6),
+                                  child: Image.network(
+                                    photoUrl,
+                                    width: 80,
+                                    height: 80,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (context, error, stackTrace) {
+                                      return Container(
+                                        color: Colors.grey.shade200,
+                                        child: const Icon(Icons.image, size: 24),
+                                      );
+                                    },
+                                  ),
+                                ),
+                                Positioned(
+                                  top: 2,
+                                  right: 2,
+                                  child: GestureDetector(
+                                    onTap: () {
+                                      setState(() {
+                                        photosToKeep.removeAt(index);
+                                      });
+                                    },
+                                    child: Container(
+                                      width: 24,
+                                      height: 24,
+                                      decoration: BoxDecoration(
+                                        color: Colors.red.shade600,
+                                        shape: BoxShape.circle,
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: Colors.black.withValues(alpha: 0.3),
+                                            blurRadius: 4,
+                                            offset: const Offset(0, 2),
+                                          ),
+                                        ],
+                                      ),
+                                      child: const Icon(
+                                        Icons.close,
+                                        color: Colors.white,
+                                        size: 16,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+
+                  // Show new photos to add
+                  if (newPhotosToAdd.isNotEmpty) ...[
+                    Text(
+                      "New Photos to Add (${newPhotosToAdd.length})",
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      height: 100,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.green.shade300),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: ListView.builder(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.all(8),
+                        itemCount: newPhotosToAdd.length,
+                        itemBuilder: (context, index) {
+                          final image = newPhotosToAdd[index];
+                          return Container(
+                            width: 80,
+                            height: 80,
+                            margin: const EdgeInsets.only(right: 8),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.green.shade400, width: 2),
+                            ),
+                            child: Stack(
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(6),
+                                  child: SizedBox(
+                                    width: 80,
+                                    height: 80,
+                                    child: kIsWeb
+                                        ? Image.network(
+                                            image.path,
+                                            fit: BoxFit.cover,
+                                            errorBuilder: (context, error, stackTrace) {
+                                              return Container(
+                                                color: Colors.grey.shade200,
+                                                child: const Icon(Icons.image, size: 24),
+                                              );
+                                            },
+                                          )
+                                        : Image.file(
+                                            File(image.path),
+                                            fit: BoxFit.cover,
+                                            errorBuilder: (context, error, stackTrace) {
+                                              return Container(
+                                                color: Colors.grey.shade200,
+                                                child: const Icon(Icons.image, size: 24),
+                                              );
+                                            },
+                                          ),
+                                  ),
+                                ),
+                                Positioned(
+                                  top: 2,
+                                  right: 2,
+                                  child: GestureDetector(
+                                    onTap: () {
+                                      setState(() {
+                                        newPhotosToAdd.removeAt(index);
+                                      });
+                                    },
+                                    child: Container(
+                                      width: 24,
+                                      height: 24,
+                                      decoration: BoxDecoration(
+                                        color: Colors.red.shade600,
+                                        shape: BoxShape.circle,
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: Colors.black.withValues(alpha: 0.3),
+                                            blurRadius: 4,
+                                            offset: const Offset(0, 2),
+                                          ),
+                                        ],
+                                      ),
+                                      child: const Icon(
+                                        Icons.close,
+                                        color: Colors.white,
+                                        size: 16,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+
+                  const SizedBox(height: 20),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text("Cancel"),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text("Save Changes"),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    if (result != true) {
+      debugPrint("📸 Photo edit cancelled");
+      return;
+    }
+
+    // User confirmed, now upload new photos and update Firestore
+    debugPrint("📸 Saving photo changes...");
+    debugPrint("📸 Photos to keep: ${photosToKeep.length}");
+    debugPrint("📸 New photos to add: ${newPhotosToAdd.length}");
+
+    try {
+      // Upload new photos
+      final List<String> newPhotoUrls = [];
+      if (newPhotosToAdd.isNotEmpty) {
+        final propertyId = propertyData['id'] ?? propertyData['title_number'];
+
+        for (int i = 0; i < newPhotosToAdd.length; i++) {
+          try {
+            final file = newPhotosToAdd[i];
+            debugPrint("📸 Uploading new photo $i: ${file.name}");
+
+            String extension = 'jpg';
+            if (file.name.contains('.')) {
+              extension = file.name.split('.').last.toLowerCase();
+            }
+
+            final timestamp = DateTime.now().millisecondsSinceEpoch;
+            final storagePath = 'properties/$propertyId/photo_${timestamp}_$i.$extension';
+            final storageRef = FirebaseStorage.instance.ref().child(storagePath);
+
+            if (kIsWeb) {
+              final bytes = await file.readAsBytes().timeout(
+                const Duration(seconds: 10),
+                onTimeout: () => throw TimeoutException('Reading file took too long'),
+              );
+              final uploadTask = await storageRef.putData(bytes).timeout(
+                const Duration(seconds: 30),
+                onTimeout: () => throw TimeoutException('Upload took too long'),
+              );
+              final downloadUrl = await uploadTask.ref.getDownloadURL().timeout(
+                const Duration(seconds: 10),
+                onTimeout: () => throw TimeoutException('Getting download URL took too long'),
+              );
+              newPhotoUrls.add(downloadUrl);
+              debugPrint("✅ New photo $i uploaded successfully");
+            } else {
+              final uploadTask = await storageRef.putFile(File(file.path)).timeout(
+                const Duration(seconds: 30),
+                onTimeout: () => throw TimeoutException('Upload took too long'),
+              );
+              final downloadUrl = await uploadTask.ref.getDownloadURL().timeout(
+                const Duration(seconds: 10),
+                onTimeout: () => throw TimeoutException('Getting download URL took too long'),
+              );
+              newPhotoUrls.add(downloadUrl);
+              debugPrint("✅ New photo $i uploaded successfully");
+            }
+          } on TimeoutException catch (e) {
+            debugPrint("⏱️ New photo $i upload timed out: $e");
+          } catch (e, stackTrace) {
+            debugPrint("❌ Failed to upload new photo $i: $e");
+            debugPrint("❌ Stack trace: $stackTrace");
+          }
+        }
+      }
+
+      // Combine kept photos + new photos
+      final updatedPhotoUrls = [...photosToKeep, ...newPhotoUrls];
+      debugPrint("📸 Final photo count: ${updatedPhotoUrls.length}");
+
+      // Update Firestore documents
+      final fs = FirebaseFirestore.instance;
+      final propertyId = propertyData['id'] ?? propertyData['title_number'];
+      final regionId = propertyData['regionId'];
+      final adm1Base = propertyData['adm1Base'];
+
+      debugPrint("📸 Updating Firestore documents for property: $propertyId");
+
+      final batch = fs.batch();
+      final updateData = {
+        'photoUrls': updatedPhotoUrls,
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+      // Update all document copies
+      if (regionId != null && adm1Base != null) {
+        // User ADM1
+        final userAdm1Doc = fs.doc("users/${user!.uid}/regions/$regionId/adm1/$adm1Base/properties/$propertyId");
+        batch.update(userAdm1Doc, updateData);
+
+        // Public ADM1
+        final publicAdm1Doc = fs.doc("regions/$regionId/adm1/$adm1Base/properties/$propertyId");
+        batch.update(publicAdm1Doc, updateData);
+
+        // User ADM0
+        final userAdm0Doc = fs.doc("users/${user!.uid}/regions/$regionId/properties/$propertyId");
+        batch.update(userAdm0Doc, updateData);
+
+        // Public ADM0
+        final publicAdm0Doc = fs.doc("regions/$regionId/properties/$propertyId");
+        batch.update(publicAdm0Doc, updateData);
+      }
+
+      // Legacy flat
+      final legacyFlat = fs.doc("users/${user!.uid}/regions/$propertyId");
+      batch.update(legacyFlat, updateData);
+
+      await batch.commit();
+      debugPrint("✅ Firestore documents updated successfully");
+
+      // Refresh the selected polygon doc to show updated photos
+      // Force read from server to avoid stale cache
+      if (_selectedPolygonDoc != null) {
+        debugPrint("📸 Refreshing document from server...");
+
+        // Add a small delay to ensure Firestore has propagated the changes
+        await Future.delayed(const Duration(milliseconds: 500));
+
+        final refreshedDoc = await _selectedPolygonDoc!.reference.get(
+          const GetOptions(source: Source.server)
+        );
+
+        final refreshedData = refreshedDoc.data() as Map<String, dynamic>?;
+        debugPrint("📸 Refreshed doc photo count: ${(refreshedData?['photoUrls'] as List?)?.length ?? 0}");
+
+        if (mounted) {
+          setState(() {
+            _selectedPolygonDoc = refreshedDoc;
+
+            // Also update the document in userPolygonDocs list
+            final docIndex = userPolygonDocs.indexWhere((doc) => doc.id == refreshedDoc.id);
+            if (docIndex != -1) {
+              debugPrint("📸 Updating userPolygonDocs at index $docIndex");
+              userPolygonDocs[docIndex] = refreshedDoc;
+            } else {
+              debugPrint("📸 Document not found in userPolygonDocs list");
+            }
+          });
+        }
+      }
+
+      // Reload all polygons to ensure everything is in sync
+      debugPrint("📸 Reloading polygon list in background...");
+      // ignore: unawaited_futures
+      _loadUserSavedPolygons();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              "Photos updated! Total: ${updatedPhotoUrls.length}"
+            ),
+          ),
+        );
+      }
+    } catch (e, stackTrace) {
+      debugPrint("❌ Failed to update photos: $e");
+      debugPrint("❌ Stack trace: $stackTrace");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Failed to update photos: $e"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   Future<String> getCityNameFromLatLng(ll.LatLng latLng) async {

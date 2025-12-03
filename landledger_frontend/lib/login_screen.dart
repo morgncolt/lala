@@ -1,4 +1,4 @@
-import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -41,18 +41,8 @@ class _LoginScreenState extends State<LoginScreen> {
   // ---- Configure your API base here (matches your server.js) ----
   // Android emulator uses 10.0.2.2; web/desktop/iOS sim uses localhost.
   String get apiBase {
-    if (kIsWeb) return 'http://localhost:4000';
-    switch (defaultTargetPlatform) {
-      case TargetPlatform.android:
-        return 'http://192.168.0.23:4000';
-      case TargetPlatform.iOS:
-      case TargetPlatform.macOS:
-      case TargetPlatform.windows:
-      case TargetPlatform.linux:
-        return 'http://localhost:4000';
-      default:
-        return 'http://localhost:4000';
-    }
+    // Use localhost for all platforms (ADB reverse port forwarding handles Android connectivity)
+    return 'http://localhost:4000';
   }
 
   // Note: Fabric identity provisioning is now handled by ensureIdentityForCurrentUser

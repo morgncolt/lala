@@ -15,6 +15,7 @@ import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'widgets/enhanced_regions_view.dart';
 import 'services/identity_service.dart';
+import 'models/property_address.dart';
 
 enum _ViewMode { allBlocks, myBlocks, transactions, actors, regions }
 
@@ -37,15 +38,7 @@ String _defaultApiBase() {
     return '${isHttps ? 'https' : 'http'}://$host:$port';
   }
 
-  if (Platform.isAndroid) {
-    // For physical devices, use your computer's local IP
-    // For emulators, use 10.0.2.2
-    // Change this to your computer's IP address (run 'ipconfig' on Windows)
-    return 'http://192.168.0.23:4000';  // TODO: Use your actual local IP
-  }
-
-  // iOS sim / desktop
-  if (Platform.isIOS) return 'http://localhost:4000';
+  // Use localhost for all platforms (ADB reverse port forwarding handles Android connectivity)
   return 'http://localhost:4000';
 }
 
@@ -185,12 +178,12 @@ class LandledgerScreen extends StatefulWidget {
   final String? currentWalletAddress;
 
   const LandledgerScreen({
-    Key? key,
+    super.key,
     this.selectedRecord,
     this.blockchainDataNotifier,
     this.currentOwnerId,
     this.currentWalletAddress,
-  }) : super(key: key);
+  });
 
   // 2) Lightweight identicon color from address (no deps)
   static Color identiconColor(String a) {
@@ -342,7 +335,7 @@ class _LandledgerScreenState extends State<LandledgerScreen> {
 
   // UI state
   bool _showDetailsPane = false;
-  int _selectedTabIndex = 0; // 0: Overview, 1: Transactions, 2: Parcels Map, 3: CIF Votes, 4: JSON
+  final int _selectedTabIndex = 0; // 0: Overview, 1: Transactions, 2: Parcels Map, 3: CIF Votes, 4: JSON
 
   // View modes
   _ViewMode _view = _ViewMode.allBlocks;
@@ -1840,9 +1833,9 @@ class _LandledgerScreenState extends State<LandledgerScreen> {
   Widget _buildDesktopTable() {
     return SingleChildScrollView(
       child: DataTable(
-        headingRowColor: MaterialStateProperty.all(const Color(0xFF1F1F1F)),
-        dataRowColor: MaterialStateProperty.resolveWith((states) {
-          if (states.contains(MaterialState.selected)) {
+        headingRowColor: WidgetStateProperty.all(const Color(0xFF1F1F1F)),
+        dataRowColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
             return const Color(0xFF6366F1).withOpacity(0.1);
           }
           return const Color(0xFF121212);
@@ -2141,6 +2134,82 @@ class _LandledgerScreenState extends State<LandledgerScreen> {
                 ],
               ),
 
+              // Transaction Details (for parcel.create)
+              if (block.types.contains('parcel.create')) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.green.withValues(alpha: 0.1),
+                    border: Border.all(color: Colors.green.withValues(alpha: 0.3), width: 1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.add_location, size: 14, color: Colors.green),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Parcel Created',
+                              style: const TextStyle(
+                                color: Colors.green,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            // Show location if available
+                            if (block.rawData['address'] != null || block.rawData['addressString'] != null)
+                              () {
+                                String locationText = '';
+                                if (block.rawData['address'] is Map<String, dynamic>) {
+                                  final address = PropertyAddress.fromJson(block.rawData['address']);
+                                  // Show city, country for compact display
+                                  final parts = <String>[];
+                                  if (address.city?.isNotEmpty == true) parts.add(address.city!);
+                                  if (address.country?.isNotEmpty == true) parts.add(address.country!);
+                                  locationText = parts.isNotEmpty ? parts.join(', ') : address.toDisplayString();
+                                } else {
+                                  locationText = block.rawData['addressString']?.toString() ?? '';
+                                }
+                                return Text(
+                                  'Location: $locationText',
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 11,
+                                    height: 1.3,
+                                  ),
+                                );
+                              }()
+                            else
+                              Text(
+                                'Location: ${p.iso2 != null ? 'Unknown location in ${block.rawData['country']?.toString() ?? 'Unknown Country'}' : 'Unknown'}',
+                                style: const TextStyle(
+                                  color: Colors.white54,
+                                  fontSize: 11,
+                                  fontStyle: FontStyle.italic,
+                                ),
+                              ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Timestamp: ${DateFormat('MMM d, yyyy HH:mm:ss').format(block.timestamp)}',
+                              style: const TextStyle(
+                                color: Colors.white54,
+                                fontSize: 10,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+
               const SizedBox(height: 8),
 
               // Owner Info
@@ -2199,6 +2268,103 @@ class _LandledgerScreenState extends State<LandledgerScreen> {
               ),
 
               const SizedBox(height: 12),
+
+              // LandLedger ID
+              if (block.rawData['id'] != null || block.rawData['title_number'] != null) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1F1F1F),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.badge_outlined, size: 14, color: Color(0xFF6366F1)),
+                      const SizedBox(width: 8),
+                      Text(
+                        'LandLedger ID: ',
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.7),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      Expanded(
+                        child: Text(
+                          block.rawData['id']?.toString() ?? block.rawData['title_number']?.toString() ?? '',
+                          style: const TextStyle(
+                            color: Color(0xFF6366F1),
+                            fontSize: 12,
+                            fontFamily: 'monospace',
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      GestureDetector(
+                        onTap: () {
+                          final id = block.rawData['id']?.toString() ?? block.rawData['title_number']?.toString() ?? '';
+                          Clipboard.setData(ClipboardData(text: id));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('LandLedger ID copied!')),
+                          );
+                        },
+                        child: const Icon(Icons.copy, size: 12, color: Colors.white54),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+
+              // Property Address
+              if (block.rawData['address'] != null || block.rawData['addressString'] != null) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1F1F1F),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.only(top: 2),
+                        child: Icon(Icons.location_on, size: 14, color: Colors.redAccent),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: () {
+                          // Try to parse structured address first
+                          if (block.rawData['address'] is Map<String, dynamic>) {
+                            final address = PropertyAddress.fromJson(block.rawData['address']);
+                            return Text(
+                              address.toDisplayString(),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                height: 1.4,
+                              ),
+                            );
+                          }
+                          // Fallback to addressString
+                          final addressString = block.rawData['addressString']?.toString() ??
+                                                block.rawData['address']?.toString() ?? '';
+                          return Text(
+                            addressString.isNotEmpty ? addressString : 'No address available',
+                            style: TextStyle(
+                              color: addressString.isNotEmpty ? Colors.white : Colors.white54,
+                              fontSize: 12,
+                              fontStyle: addressString.isEmpty ? FontStyle.italic : FontStyle.normal,
+                              height: 1.4,
+                            ),
+                          );
+                        }(),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
 
               // Action Buttons - Minimal design
               Row(
@@ -3247,9 +3413,9 @@ class _RegionsMapView extends StatefulWidget {
 }
 
 class _RegionsMapViewState extends State<_RegionsMapView> {
-  String _selectedRegion = 'all';
-  bool _showSatelliteView = false;
-  String _sortBy = 'count'; // count, value, area
+  final String _selectedRegion = 'all';
+  final bool _showSatelliteView = false;
+  final String _sortBy = 'count'; // count, value, area
   
   @override
   Widget build(BuildContext context) {
@@ -4364,7 +4530,7 @@ class _OwnerViewerState extends State<_OwnerViewer> {
                         subtitle: Text(
                           [
                             if (area != null)
-                              'Area: ${area >= .01 ? area.toStringAsFixed(2) + ' km²' : (area * 1e6).toStringAsFixed(0) + ' m²'}',
+                              'Area: ${area >= .01 ? '${area.toStringAsFixed(2)} km²' : '${(area * 1e6).toStringAsFixed(0)} m²'}',
                             'Created: ${_fmtDate(p['createdAt'])}',
                           ].join(' • '),
                           style: const TextStyle(color: Colors.white70),
@@ -4704,10 +4870,10 @@ class _HistoryViewerState extends State<_HistoryViewer> {
     DateTime? currentOwnerSince;
     final now = DateTime.now();
     final summary = widget.initialSummary ?? const {};
-    if (createdAt == null && summary['createdAt'] != null) {
+    if (summary['createdAt'] != null) {
       createdAt = _tsToDate(summary['createdAt']);
     }
-    if (currentOwnerSince == null && summary['currentOwnerSince'] != null) {
+    if (summary['currentOwnerSince'] != null) {
       currentOwnerSince = _tsToDate(summary['currentOwnerSince']);
     }
 
@@ -4715,7 +4881,7 @@ class _HistoryViewerState extends State<_HistoryViewer> {
       final ts = e is Map ? e['timestamp'] : null;
       final dt = _tsToDate(ts);
       if (dt != null) {
-        if (createdAt == null || dt.isBefore(createdAt!)) createdAt = dt;
+        if (createdAt == null || dt.isBefore(createdAt)) createdAt = dt;
       }
     }
     if (widget.currentOwnerId != null && widget.currentOwnerId!.isNotEmpty) {
@@ -4730,7 +4896,7 @@ class _HistoryViewerState extends State<_HistoryViewer> {
       }
     }
     currentOwnerSince ??= createdAt;
-    final tenure = (currentOwnerSince != null) ? now.difference(currentOwnerSince!) : null;
+    final tenure = (currentOwnerSince != null) ? now.difference(currentOwnerSince) : null;
     final canRefresh = widget.parcelId != null && widget.parcelId!.isNotEmpty;
 
     return SingleChildScrollView(

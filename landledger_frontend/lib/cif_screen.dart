@@ -6,7 +6,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
@@ -90,8 +89,7 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
 
   // ------------ Misc helpers ------------
   String _apiBase() {
-    if (kIsWeb) return 'http://localhost:4000';
-    if (Platform.isAndroid) return 'http://192.168.0.23:4000';
+    // Use localhost for all platforms (ADB reverse port forwarding handles Android connectivity)
     return 'http://localhost:4000';
   }
 

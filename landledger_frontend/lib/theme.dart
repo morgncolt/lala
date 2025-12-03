@@ -14,7 +14,6 @@ ThemeData buildDarkTheme() {
     brightness: Brightness.dark,
     scaffoldBackgroundColor: _bgDark,
     primaryColor: _brandGreen,
-    useMaterial3: true,
     textTheme: GoogleFonts.robotoTextTheme(base.textTheme).apply(
       bodyColor: Colors.white,
       displayColor: Colors.white,
@@ -81,7 +80,6 @@ ThemeData buildDarkTheme() {
     colorScheme: base.colorScheme.copyWith(
       primary: _brandGreen,
       secondary: _accentGreen,
-      background: _bgDark,
       surface: _fieldFill,
       onPrimary: Colors.white,
       onSecondary: Colors.white,
@@ -97,11 +95,11 @@ ThemeData buildDarkTheme() {
     // Cards, if needed
     cardTheme: const CardThemeData(
       color: _fieldFill,
-      shape: const RoundedRectangleBorder(
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.all(Radius.circular(12)),
       ),
       elevation: 2,
-      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      margin: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
     ),
 
     dividerColor: Colors.grey[700],
@@ -114,7 +112,6 @@ ThemeData buildLightTheme() {
     brightness: Brightness.light,
     scaffoldBackgroundColor: const Color(0xFFF6F9FC),
     primaryColor: Colors.blue,
-    useMaterial3: true,
     textTheme: GoogleFonts.robotoTextTheme(base.textTheme),
     appBarTheme: const AppBarTheme(
       backgroundColor: Colors.white,
@@ -146,7 +143,6 @@ ThemeData buildLightTheme() {
     colorScheme: base.colorScheme.copyWith(
       primary: Colors.blue,
       secondary: Colors.indigo,
-      background: const Color(0xFFF6F9FC),
       surface: Colors.white,
       onPrimary: Colors.white,
       onSurface: Colors.black,

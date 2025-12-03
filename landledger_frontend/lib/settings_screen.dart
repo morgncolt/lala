@@ -11,7 +11,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _showAccountSuggestions = true;
   bool _likeCountsVisible = true;
-  bool _secureLoginEnabled = true;
+  final bool _secureLoginEnabled = true;
   bool _communityNotifications = true;
   bool _transactionAlerts = true;
 

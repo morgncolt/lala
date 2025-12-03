@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:latlong2/latlong.dart';
 
 import 'package:landledger_frontend/my_properties_screen.dart';
 import 'package:landledger_frontend/map_screen.dart';

@@ -11,9 +11,9 @@ class EnhancedRegionsView extends StatefulWidget {
   final List<BlockData> blocks;
   
   const EnhancedRegionsView({
-    Key? key,
+    super.key,
     required this.blocks,
-  }) : super(key: key);
+  });
 
   @override
   State<EnhancedRegionsView> createState() => _EnhancedRegionsViewState();
@@ -22,7 +22,7 @@ class EnhancedRegionsView extends StatefulWidget {
 class _EnhancedRegionsViewState extends State<EnhancedRegionsView> {
   String _selectedRegion = 'all';
   bool _showSatelliteView = false;
-  String _sortBy = 'count'; // count, value, area
+  final String _sortBy = 'count'; // count, value, area
 
   @override
   Widget build(BuildContext context) {
@@ -703,7 +703,7 @@ class _EnhancedRegionsViewState extends State<EnhancedRegionsView> {
                 ],
               ),
             );
-          }).toList(),
+          }),
         ],
       ),
     );
@@ -827,7 +827,7 @@ class _EnhancedRegionsViewState extends State<EnhancedRegionsView> {
                 ],
               ),
             );
-          }).toList(),
+          }),
         ],
       ),
     );

@@ -1,9 +1,9 @@
 // lib/services/api_client.dart
 import 'dart:convert';
-import 'dart:io' show Platform;
 import 'package:http/http.dart' as http;
 
-String apiBase() => Platform.isAndroid ? 'http://192.168.0.23:4000' : 'http://localhost:4000';
+// Use localhost for all platforms (ADB reverse port forwarding handles Android connectivity)
+String apiBase() => 'http://localhost:4000';
 Uri apiUri(String path) => Uri.parse(apiBase()).replace(path: path);
 
 Future<String> fetchWalletLabel(String uid, String email) async {

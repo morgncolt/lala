@@ -9,9 +9,6 @@ import 'package:google_maps_flutter/google_maps_flutter.dart' as gmap;
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart' as ll;
-import 'dart:io' show Platform;                  // ADD
-import 'package:flutter/foundation.dart' show kIsWeb; // ADD
-
 
 import 'landledger_screen.dart';
 import 'map_screen.dart';
@@ -30,7 +27,7 @@ class MyPropertiesScreen extends StatefulWidget {
   final void Function(Map<String, dynamic> blockchainData)? onBlockchainRecordSelected;
 
   const MyPropertiesScreen({
-    Key? key,
+    super.key,
     required this.regionId,
     this.geojsonPath,
     this.highlightPolygon,
@@ -38,7 +35,7 @@ class MyPropertiesScreen extends StatefulWidget {
     this.onRegionSelected,
     this.showBackArrow = false,
     this.onBlockchainRecordSelected,
-  }) : super(key: key);
+  });
 
   @override
   State<MyPropertiesScreen> createState() => _MyPropertiesScreenState();
@@ -107,11 +104,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
 
     // ---- API base to match MapScreen ----
   String get _apiBase {
-    if (kIsWeb || Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-      return 'http://localhost:4000';
-    }
-    if (Platform.isAndroid) return 'http://192.168.0.23:4000';
-    if (Platform.isIOS) return 'http://localhost:4000';
+    // Use localhost for all platforms (ADB reverse port forwarding handles Android connectivity)
     return 'http://localhost:4000';
   }
 
@@ -236,7 +229,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
 
   // ---------- Networking helpers ----------
   Future<Map<String, dynamic>?> fetchLandRecord(String parcelId) async {
-    final url = Uri.parse('http://192.168.0.23:4000/api/landledger/$parcelId');
+    final url = Uri.parse('http://localhost:4000/api/landledger/$parcelId');
     try {
       final response = await http.get(url).timeout(const Duration(seconds: 5));
       if (response.statusCode == 200) {
@@ -307,7 +300,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     // Listen to ALL user properties in this country, regardless of ADM1 folder.
     final q = FirebaseFirestore.instance
         .collectionGroup('properties')
-        .where('ownerUid', isEqualTo: _user!.uid)
+        .where('ownerUid', isEqualTo: _user.uid)
         .where('regionId', isEqualTo: regionIdCanonical);
 
     _propsSub = q.snapshots().listen((snap) {
@@ -414,7 +407,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     if (confirm != true) return;
 
     try {
-      final uid = _user!.uid;
+      final uid = _user.uid;
       final regionId = canonicalizeRegionId((prop['regionId'] ?? widget.regionId).toString());
       final adm1Base = _deriveAdm1BaseFromProp(prop);
       final blockchainId = (prop['blockchainId'] ?? prop['id'] ?? prop['title_number'] ?? docId).toString();
@@ -730,7 +723,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
 
     final docData = _selectedPolygonDoc!;
 
-    String _areaFormatted(num? areaSqKm) {
+    String areaFormatted(num? areaSqKm) {
       final a = areaSqKm ?? 0;
       final m2 = a * 1e6;
       return m2 >= 100000 ? '${(m2 / 1e6).toStringAsFixed(2)} km²' : '${m2.toStringAsFixed(0)} m²';
@@ -817,7 +810,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                 const SizedBox(height: 12),
                 _buildInfoRow('Description', docData['description']),
                 _buildInfoRow('Wallet', formatFriendlyWalletSync(docData['wallet_address'] ?? '')),
-                _buildInfoRow('Area', _areaFormatted(docData['area_sqkm'] as num?)),
+                _buildInfoRow('Area', areaFormatted(docData['area_sqkm'] as num?)),
                 if (docData['timestamp'] != null)
                   _buildInfoRow(
                     'Created',
@@ -1039,8 +1032,8 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        child: const Icon(Icons.add),
         onPressed: _openCreator,
+        child: const Icon(Icons.add),
       ),
     );
   }
