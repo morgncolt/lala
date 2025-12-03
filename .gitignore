@@ -15,7 +15,9 @@ npm-debug.log*
 # Backup files
 *.bak
 *.bak.*
+*.backup
 wallet_backup_*/
+*.backup
 
 # Build artifacts
 _shutdown_artifacts/
@@ -28,6 +30,7 @@ api/wallet/
 # Connection backup files
 api/connection/*.bak.*
 api/connection/connection-org2.json
+api/connection/connection-org1.json
 
 # Archive
 archive/

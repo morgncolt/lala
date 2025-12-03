@@ -5,15 +5,29 @@ type Coordinate struct {
 	Lng float64 `json:"lng"`
 }
 
+type PropertyAddress struct {
+	HouseNumber    string  `json:"houseNumber,omitempty"`
+	StreetName     string  `json:"streetName,omitempty"`
+	City           string  `json:"city,omitempty"`
+	StateProvince  string  `json:"stateProvince,omitempty"`
+	Country        string  `json:"country,omitempty"`
+	PostalCode     string  `json:"postalCode,omitempty"`
+	AdditionalInfo string  `json:"additionalInfo,omitempty"`
+	Latitude       float64 `json:"latitude,omitempty"`
+	Longitude      float64 `json:"longitude,omitempty"`
+}
+
 type LandParcel struct {
-	ParcelID    string       `json:"parcelId"`
-	TitleNumber string       `json:"titleNumber"`
-	Owner       string       `json:"owner"`
-	Coordinates []Coordinate `json:"coordinates"`
-	AreaSqKm    float64      `json:"areaSqKm"`
-	Description string       `json:"description"`
-	CreatedAt   string       `json:"createdAt"`
-	Verified    bool         `json:"verified"`
+	ParcelID      string           `json:"parcelId"`
+	TitleNumber   string           `json:"titleNumber"`
+	Owner         string           `json:"owner"`
+	Coordinates   []Coordinate     `json:"coordinates"`
+	AreaSqKm      float64          `json:"areaSqKm"`
+	Description   string           `json:"description"`
+	Address       *PropertyAddress `json:"address,omitempty"`
+	AddressString string           `json:"addressString,omitempty"`
+	CreatedAt     string           `json:"createdAt"`
+	Verified      bool             `json:"verified"`
 }
 
 type HistoryEntry struct {

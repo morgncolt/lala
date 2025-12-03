@@ -91,7 +91,7 @@ need docker; need awk; need sed
 
 if [[ "$SYNC_API" == "true" ]]; then
   need node
-  need pm2
+  # need pm2
   mkdir -p "$API_CONN_DIR" "$WALLET_DIR"
 fi
 
@@ -513,7 +513,7 @@ if [[ "$SYNC_API" == "true" ]]; then
   print_header "Sync API: connection profile, wallet, and pm2 restart"
   write_api_connection_profile
   ensure_wallet_identities
-  restart_api_pm2
+  # restart_api_pm2
   echo ""
   echo "NOTE:"
   echo "  - Connection profile uses TLS CA *paths* and includes channels->mychannel."
