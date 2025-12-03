@@ -7,19 +7,6 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-repositories {
-    google()
-    mavenCentral()
-    maven {
-        url = uri("https://api.mapbox.com/downloads/v2/releases/maven")
-        credentials {
-            username = "mapbox"
-            password = project.findProperty("pk.eyJ1IjoibW9yZ25jb2x0IiwiYSI6ImNtYng2eHI0ZjB3cjQybW9zNXZhaDJqanYifQ.0qZEU6MBjiTZiUDPs6JyoQ") as String?
-        }
-    }
-}
-
-
 android {
     namespace = "com.example.landledger_frontend"
     compileSdk = flutter.compileSdkVersion
@@ -60,6 +47,9 @@ flutter {
 }
 
 dependencies {
+    implementation(platform("com.google.firebase:firebase-bom:34.5.0"))
+    implementation("com.google.firebase:firebase-appcheck-debug")
+    implementation("com.google.firebase:firebase-dynamic-links:21.2.0")
     // ✅ Required for Mapbox (Java/Kotlin side of SDK)
     implementation("com.mapbox.maps:android:10.15.1")
 

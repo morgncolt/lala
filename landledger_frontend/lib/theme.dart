@@ -95,14 +95,14 @@ ThemeData buildDarkTheme() {
     ),
 
     // Cards, if needed
-    cardTheme: const CardThemeData().copyWith(
+    cardTheme: const CardThemeData(
       color: _fieldFill,
-      shape: RoundedRectangleBorder(
+      shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.all(Radius.circular(12)),
       ),
       elevation: 2,
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
     ),
-
 
     dividerColor: Colors.grey[700],
   );

@@ -4,11 +4,12 @@ import 'region_model.dart';
 
 class RegionsRepository {
   static final Map<String, Region> _regions = {
-    // Africa Regions
+    // Africa (optional, keep if you have this file)
     'africa': Region(
       id: 'africa',
       name: 'Africa',
-      geoJsonPath: 'assets/data/regions/africa.geojson',
+      // If you have this, leave it. Otherwise remove this entry or add the file.
+      geoJsonPath: 'assets/data/africa.geojson',
       center: LatLng(8.7832, 34.5085),
       zoomLevel: 3,
     ),
@@ -17,7 +18,7 @@ class RegionsRepository {
     'cameroon': Region(
       id: 'cameroon',
       name: 'Cameroon',
-      geoJsonPath: 'assets/data/regions/cameroon.geojson',
+      geoJsonPath: 'assets/data/cameroon.geojson', // <— fixed
       mapTilePath: 'assets/maps/cameroon.mbtiles',
       center: LatLng(7.3697, 12.3547),
       zoomLevel: 6,
@@ -27,7 +28,7 @@ class RegionsRepository {
     'ghana': Region(
       id: 'ghana',
       name: 'Ghana',
-      geoJsonPath: 'assets/data/regions/ghana.geojson',
+      geoJsonPath: 'assets/data/ghana.geojson', // <— fixed
       mapTilePath: 'assets/maps/ghana.mbtiles',
       center: LatLng(7.9465, -1.0232),
       zoomLevel: 7,
@@ -37,69 +38,39 @@ class RegionsRepository {
     'kenya': Region(
       id: 'kenya',
       name: 'Kenya',
-      geoJsonPath: 'assets/data/regions/kenya.geojson',
+      geoJsonPath: 'assets/data/kenya.geojson', // <— fixed
       mapTilePath: 'assets/maps/kenya.mbtiles',
       center: LatLng(-0.0236, 37.9062),
       zoomLevel: 6,
     ),
 
-    // Nigeria (Country Level)
+    // Nigeria (country level)
     'nigeria': Region(
       id: 'nigeria',
       name: 'Nigeria',
-      geoJsonPath: 'assets/data/regions/nigeria/full.geojson',
+      // Use the file you actually have. If you only have `nigeria.geojson`, use that:
+      geoJsonPath: 'assets/data/nigeria.geojson', // <— replace full.geojson
       mapTilePath: 'assets/maps/nigeria.mbtiles',
       center: LatLng(9.0820, 8.6753),
       zoomLevel: 6,
     ),
-
-    // Nigeria - Abuja (Capital Territory)
-    'nigeria-abuja': Region(
-      id: 'nigeria-abuja',
-      name: 'Abuja, Nigeria',
-      geoJsonPath: 'assets/data/regions/nigeria/abuja.geojson',
-      mapTilePath: 'assets/maps/nigeria/abuja.mbtiles',
-      center: LatLng(9.0579, 7.4951),
-      zoomLevel: 12,
-      parentId: 'nigeria',
-    ),
-
-    // Nigeria - Lagos State
-    'nigeria-lagos': Region(
-      id: 'nigeria-lagos',
-      name: 'Lagos, Nigeria',
-      geoJsonPath: 'assets/data/regions/nigeria/lagos.geojson',
-      mapTilePath: 'assets/maps/nigeria/lagos.mbtiles',
-      center: LatLng(6.5244, 3.3792),
-      zoomLevel: 11,
-      parentId: 'nigeria',
-    ),
-
-    // Add more regions here following the same pattern
   };
 
-  /// Get all top-level regions (excluding sub-regions)
-  static List<Region> getCountries() {
-    return _regions.values.where((region) => region.parentId == null).toList();
-  }
+  /// Top-level regions (no parent)
+  static List<Region> getCountries() =>
+      _regions.values.where((r) => r.parentId == null).toList();
 
-  /// Get all regions including sub-regions
+  /// All regions
   static List<Region> getAll() => _regions.values.toList();
 
-  /// Get a region by its ID
+  /// Lookup by id (case-insensitive)
   static Region? getById(String id) => _regions[id.toLowerCase()];
 
-  /// Get sub-regions for a parent region
-  static List<Region> getSubRegions(String parentId) {
-    return _regions.values
-        .where((region) => region.parentId == parentId.toLowerCase())
-        .toList();
-  }
+  /// Sub-regions of a parent
+  static List<Region> getSubRegions(String parentId) =>
+      _regions.values.where((r) => r.parentId == parentId.toLowerCase()).toList();
 
-  /// Search regions by name
-  static List<Region> search(String query) {
-    return _regions.values
-        .where((region) => region.name.toLowerCase().contains(query.toLowerCase()))
-        .toList();
-  }
+  /// Search by name
+  static List<Region> search(String query) =>
+      _regions.values.where((r) => r.name.toLowerCase().contains(query.toLowerCase())).toList();
 }

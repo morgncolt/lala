@@ -3,9 +3,12 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 import 'comments_screen.dart';
 import 'hashtag_utils.dart';
+import 'services/user_profile_service.dart';
+import 'user_profile_screen.dart';
 
 
 class HomeScreen extends StatefulWidget {
@@ -29,9 +32,10 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   late List<Map<String, String>> _regions;
   String? _selectedRegionId;
-  final User? _user = FirebaseAuth.instance.currentUser;
+  User? get _user => FirebaseAuth.instance.currentUser;
   bool _hasTriggeredInitialNavigation = false;
   final ImagePicker _picker = ImagePicker();
+  final UserProfileService _profileService = UserProfileService();
 
   @override
   void initState() {
@@ -40,6 +44,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     
     debugPrint("🏠 HomeScreen initState() with ${widget.currentRegionId}");
     _regions = [
+      {"id": "united_states", "label": "United States", "path": "assets/data/united_states.geojson"},
       {"id": "cameroon", "label": "Cameroon", "path": "assets/data/cameroon.geojson"},
       {"id": "ghana", "label": "Ghana", "path": "assets/data/ghana.geojson"},
       {"id": "kenya", "label": "Kenya", "path": "assets/data/kenya.geojson"},
@@ -257,6 +262,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         value: _selectedPostType,
                         items: const [
                           DropdownMenuItem(
+                            value: 'General',
+                            child: Text('General'),
+                          ),
+                          DropdownMenuItem(
                             value: 'Update',
                             child: Text('Update'),
                           ),
@@ -308,6 +317,23 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                 }
                               }
 
+                              // Get user profile for display name and photo
+                              final userProfile = await _profileService.getCurrentUserProfile();
+
+                              // Determine the username to use
+                              final String username;
+                              if (userProfile != null && userProfile.displayName.isNotEmpty && userProfile.displayName != 'Anonymous') {
+                                username = userProfile.displayName;
+                              } else if (_user?.displayName != null) {
+                                final displayName = _user?.displayName;
+                                username = displayName!.isNotEmpty ? displayName : (_user?.email?.split('@').first ?? 'user${_user?.uid.substring(0, 6) ?? 'unknown'}');
+                              } else if (_user?.email != null) {
+                                final email = _user?.email;
+                                username = email!.split('@').first;
+                              } else {
+                                username = 'user${_user?.uid.substring(0, 6) ?? 'unknown'}';
+                              }
+
                               // Create post
                               await FirebaseFirestore.instance
                                   .collection('regions')
@@ -315,7 +341,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                   .collection('posts')
                                   .add({
                                 'userId': _user?.uid,
-                                'userEmail': _user?.email ?? 'Anonymous',
+                                'userEmail': _user?.email ?? '',
+                                'displayName': username,
+                                'userPhotoURL': userProfile?.photoURL ?? _user?.photoURL,
                                 'type': _selectedPostType,
                                 'description': _postController.text,
                                 'timestamp': FieldValue.serverTimestamp(),
@@ -373,14 +401,26 @@ Future<String?> _uploadImage(XFile imageFile) async {
       }
 
       return Scaffold(
-        body: Column(
-          children: [
-            _CustomAppBar(
-              regions: _regions,
-              selectedRegionKey: _selectedRegionId,
-              onRegionChanged: (key) {
+        body: SafeArea(
+          child: Column(
+            children: [
+              _CustomAppBar(
+                regions: _regions,
+                selectedRegionKey: _selectedRegionId,
+                onRegionChanged: (key) async {
                 setState(() => _selectedRegionId = key);
                 final region = _regions.firstWhere((r) => r['id'] == key);
+
+                // Save user's region choice for next launch
+                try {
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setString('last_selected_region_id', key);
+                  await prefs.setString('last_selected_geojson_path', region['path']!);
+                  debugPrint('💾 Saved region preference: $key');
+                } catch (e) {
+                  debugPrint('⚠️ Failed to save region preference: $e');
+                }
+
                 widget.onRegionSelected?.call(key, region['path']!);
               },
               onSearchPressed: () {
@@ -394,203 +434,63 @@ Future<String?> _uploadImage(XFile imageFile) async {
               },
               user: _user,
             ),
+
+            // MAIN HOME CONTENT
             Expanded(
-              child: StreamBuilder<QuerySnapshot>(
-                stream: FirebaseFirestore.instance
-                    .collection('regions')
-                    .doc(_selectedRegionId)
-                    .collection('posts')
-                    .orderBy('timestamp', descending: true)
-                    .snapshots()
-                    .handleError((error) {
-                  debugPrint('Posts stream error: $error');
-                }),
-                builder: (ctx, snap) {
-                  if (snap.hasError) {
-                    return Center(child: Text('Error: ${snap.error}'));
-                  }
-                  if (!snap.hasData) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  final docs = snap.data!.docs;
-                  if (docs.isEmpty) {
-                    return const Center(child: Text('No posts yet.'));
-                  }
-                  return ListView.builder(
-                    itemCount: docs.length,
-                    itemBuilder: (ctx, i) {
-                      final postId = docs[i].id;
-                      final data = docs[i].data()! as Map<String, dynamic>;
-                      final type = data['type'] as String? ?? 'Update';
-                      final desc = data['description'] as String? ?? '';
-                      final ts = data['timestamp'] as Timestamp?;
-                      final timeLabel = ts?.toDate().toLocal().toString().substring(0, 16) ?? '';
-                      final likes = (data['likes'] as int? ?? 0);
-                      final likedBy = List<String>.from(data['likedBy'] ?? []);
-                      final isLiked = _user != null && likedBy.contains(_user!.uid);
-                      final userEmail = data['userEmail'] as String? ?? 'Anonymous';
-                      final imageUrls = List<String>.from(data['imageUrls'] ?? []);
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    /// ✅ LAND-FOCUSED PROMPTS SECTION
+                    HomePromptSection(
+                      selectedRegionId: _selectedRegionId!,
+                      regions: _regions,
+                      onRegionSelected: widget.onRegionSelected,
+                      onGoToMap: widget.onGoToMap,
+                    ),
 
-                      IconData icon;
-                      switch (type) {
-                        case 'Safety Incident': icon = Icons.warning; break;
-                        case 'Infrastructure Damage': icon = Icons.build; break;
-                        case 'New Region': icon = Icons.add_location; break;
-                        default: icon = Icons.note;
-                      }
+                    const SizedBox(height: 24),
 
-                      return Card(
-                        margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
-                        elevation: 2,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Icon(icon, color: Theme.of(context).primaryColor, size: 24),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      type,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 16,
-                                      ),
-                                    ),
-                                  ),
-                                  Text(
-                                    timeLabel,
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.grey.shade600,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              RichText(
-                                text: TextSpan(
-                                  children: buildTextWithHashtag(context, desc),
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    color: Color.fromARGB(255, 255, 255, 255),
-                                  ),
-                                ),
-                              ),              
-
-                              if (imageUrls.isNotEmpty) ...[
-                                const SizedBox(height: 8),
-                                SizedBox(
-                                  height: 150,
-                                  child: ListView.builder(
-                                    scrollDirection: Axis.horizontal,
-                                    itemCount: imageUrls.length,
-                                    itemBuilder: (ctx, index) {
-                                      return Padding(
-                                        padding: const EdgeInsets.only(right: 8),
-                                        child: ClipRRect(
-                                          borderRadius: BorderRadius.circular(8),
-                                          child: Image.network(
-                                            imageUrls[index],
-                                            width: 150,
-                                            height: 150,
-                                            fit: BoxFit.cover,
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                ),
-                              ],
-                              const SizedBox(height: 8),
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Posted by: $userEmail',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.grey.shade600,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      Row(
-                                        children: [
-                                          IconButton(
-                                            icon: Icon(
-                                              isLiked ? Icons.favorite : Icons.favorite_border,
-                                              color: isLiked ? Colors.red : Colors.grey,
-                                              size: 20,
-                                            ),
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(),
-                                            onPressed: () => _toggleLike(postId, likedBy),
-                                          ),
-                                          const SizedBox(width: 4),
-                                          Text(
-                                            '$likes',
-                                            style: TextStyle(
-                                              fontSize: 14,
-                                              color: Colors.grey.shade700,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      Row(
-                                        children: [
-                                          IconButton(
-                                            icon: const Icon(Icons.comment, size: 20),
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(),
-                                            onPressed: () => _showCommentsSheet(postId),
-                                          ),
-                                          const SizedBox(width: 8),
-                                          IconButton(
-                                            icon: const Icon(Icons.delete, size: 20),
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(),
-                                            onPressed: () {
-                                              if (_user?.uid == data['userId']) {
-                                                deletePost(context, _selectedRegionId!, postId);
-                                              }
-                                            },
-                                          ),
-                                          IconButton(
-                                            icon: const Icon(Icons.share, size: 20),
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(),
-                                            onPressed: () {},
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ],
+                    /// ✅ COMMUNITY POSTS (SECONDARY)
+                    Text(
+                      'Community activity in this region',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
                           ),
-                        ),
-                      );
-                    },
-                  );
-                },
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'See what people in ${_regions.firstWhere((r) => r["id"] == _selectedRegionId!)["label"]} are sharing about their land, safety, and infrastructure.',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: Colors.grey.shade600,
+                          ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Post creation bar
+                    _PostCreationBar(
+                      user: _user,
+                      onTap: _showNewPostModal,
+                    ),
+                    const SizedBox(height: 16),
+
+                    CommunityFeedSection(
+                      selectedRegionId: _selectedRegionId!,
+                      user: _user,
+                      onToggleLike: _toggleLike,
+                      onDeletePost: (postId) =>
+                          deletePost(context, _selectedRegionId!, postId),
+                      onShowComments: _showCommentsSheet,
+                    ),
+                  ],
+                ),
               ),
             ),
           ],
         ),
-        floatingActionButton: FloatingActionButton(
-          onPressed: _showNewPostModal,
-          tooltip: 'New Post',
-          child: const Icon(Icons.post_add),
         ),
+
       );
     } catch (e, stackTrace) {
       debugPrint("🚨 HomeScreen build() failed: $e\n$stackTrace");
@@ -615,7 +515,534 @@ Future<String?> _uploadImage(XFile imageFile) async {
   }
 }
 
-// Rest of your code (_CustomAppBar and PostSearchDelegate classes remain the same)
+// ============================================================================
+// LAND-FOCUSED PROMPT SECTION
+// ============================================================================
+
+class HomePromptSection extends StatelessWidget {
+  final String selectedRegionId;
+  final List<Map<String, String>> regions;
+  final void Function(String regionId, String geojsonPath)? onRegionSelected;
+  final VoidCallback? onGoToMap;
+
+  const HomePromptSection({
+    Key? key,
+    required this.selectedRegionId,
+    required this.regions,
+    this.onRegionSelected,
+    this.onGoToMap,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final region = regions.firstWhere(
+      (r) => r['id'] == selectedRegionId,
+      orElse: () => regions.first,
+    );
+    final regionLabel = region['label'] ?? 'this region';
+    final geojsonPath = region['path'];
+    const quickSteps = <String>[
+      'Tap "Add Region"',
+      'Drop points along the border',
+      'Save & name it',
+    ];
+    final subtleTextColor =
+        theme.textTheme.bodyMedium?.color?.withOpacity(0.75) ?? Colors.grey.shade500;
+    final smallTextColor =
+        theme.textTheme.bodySmall?.color?.withOpacity(0.75) ?? Colors.grey.shade500;
+    final chipBackground = theme.colorScheme.onSurface.withOpacity(0.08);
+    final chipAvatarBackground = theme.colorScheme.primary.withOpacity(0.18);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Start mapping in minutes',
+          style: theme.textTheme.headlineSmall?.copyWith(
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'Short assists keep you moving. Pick your country, jump to the map, and follow the quick cues below.',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: subtleTextColor,
+          ),
+        ),
+        const SizedBox(height: 16),
+        _AnimatedPromptCard(
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(20),
+              color: theme.colorScheme.surface.withOpacity(0.15),
+              border: Border.all(
+                color: theme.colorScheme.primary.withOpacity(0.2),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    CircleAvatar(
+                      radius: 26,
+                      backgroundColor: theme.colorScheme.primary.withOpacity(0.12),
+                      child: Icon(
+                        Icons.public,
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Currently focused on',
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              color: smallTextColor,
+                            ),
+                          ),
+                          Text(
+                            regionLabel,
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Change it anytime from the dropdown above.',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: subtleTextColor,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.map_outlined),
+                  label: Text('Open map in $regionLabel'),
+                  onPressed: () {
+                    if (geojsonPath != null && onRegionSelected != null) {
+                      onRegionSelected!(selectedRegionId, geojsonPath);
+                    } else if (geojsonPath == null) {
+                      debugPrint('HomePromptSection: Missing geojson path for $selectedRegionId');
+                    }
+                    onGoToMap?.call();
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _AnimatedPromptCard(
+          delay: 160,
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(20),
+              gradient: LinearGradient(
+                colors: [
+                  theme.colorScheme.primary.withOpacity(0.12),
+                  theme.colorScheme.primary.withOpacity(0.04),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.gesture,
+                      color: theme.colorScheme.primary,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Guided drawing',
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Do these quick actions once the map opens.',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: subtleTextColor,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: List.generate(quickSteps.length, (index) {
+                    final label = quickSteps[index];
+                    return Chip(
+                      avatar: CircleAvatar(
+                        backgroundColor: chipAvatarBackground,
+                        child: Text(
+                          '${index + 1}',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: theme.colorScheme.primary,
+                          ),
+                        ),
+                      ),
+                      label: Text(
+                        label,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      backgroundColor: chipBackground,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    );
+                  }),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Pro tip: zoom in tight before placing points. You can edit or redo a shape anytime.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: smallTextColor,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _AnimatedPromptCard extends StatelessWidget {
+  final Widget child;
+  final int delay;
+
+  const _AnimatedPromptCard({
+    required this.child,
+    this.delay = 0,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0, end: 1),
+      duration: Duration(milliseconds: 500 + delay),
+      curve: Curves.easeOutCubic,
+      child: child,
+      builder: (context, value, child) {
+        return Transform.translate(
+          offset: Offset(0, (1 - value) * 20),
+          child: Opacity(
+            opacity: value,
+            child: child ?? const SizedBox.shrink(),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ============================================================================
+// COMMUNITY FEED SECTION (SECONDARY)
+// ============================================================================
+
+class CommunityFeedSection extends StatelessWidget {
+  final String selectedRegionId;
+  final User? user;
+  final void Function(String postId, List<String> likedBy) onToggleLike;
+  final void Function(String postId) onDeletePost;
+  final void Function(String postId) onShowComments;
+
+  const CommunityFeedSection({
+    Key? key,
+    required this.selectedRegionId,
+    required this.user,
+    required this.onToggleLike,
+    required this.onDeletePost,
+    required this.onShowComments,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('regions')
+          .doc(selectedRegionId)
+          .collection('posts')
+          .orderBy('timestamp', descending: true)
+          .snapshots()
+          .handleError((error) {
+        debugPrint('Posts stream error: $error');
+      }),
+      builder: (ctx, snap) {
+        if (snap.hasError) {
+          return Center(child: Text('Error: ${snap.error}'));
+        }
+        if (!snap.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final docs = snap.data!.docs;
+        if (docs.isEmpty) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: Text(
+              'No posts yet. Be the first to share an update about this region.',
+            ),
+          );
+        }
+
+        return ListView.builder(
+          physics: const NeverScrollableScrollPhysics(),
+          shrinkWrap: true,
+          itemCount: docs.length,
+          itemBuilder: (ctx, i) {
+            final postId = docs[i].id;
+            final data = docs[i].data()! as Map<String, dynamic>;
+            final type = data['type'] as String? ?? 'Update';
+            final desc = data['description'] as String? ?? '';
+            final ts = data['timestamp'] as Timestamp?;
+            final timeLabel =
+                ts?.toDate().toLocal().toString().substring(0, 16) ?? '';
+            final likes = (data['likes'] as int? ?? 0);
+            final likedBy = List<String>.from(data['likedBy'] ?? []);
+            final isLiked = user != null && likedBy.contains(user!.uid);
+            final userEmail = data['userEmail'] as String? ?? '';
+            final displayName = data['displayName'] as String? ??
+                (userEmail.isNotEmpty ? userEmail.split('@').first : 'User');
+            final userPhotoURL = data['userPhotoURL'] as String?;
+            final userId = data['userId'] as String?;
+            final imageUrls = List<String>.from(data['imageUrls'] ?? []);
+
+            IconData icon;
+            switch (type) {
+              case 'General':
+                icon = Icons.chat_bubble_outline;
+                break;
+              case 'Safety Incident':
+                icon = Icons.warning;
+                break;
+              case 'Infrastructure Damage':
+                icon = Icons.build;
+                break;
+              case 'New Region':
+                icon = Icons.add_location;
+                break;
+              default:
+                icon = Icons.note;
+            }
+
+            void openProfile() {
+              if (userId != null) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => UserProfileScreen(
+                      userId: userId,
+                      isCurrentUser: user?.uid == userId,
+                    ),
+                  ),
+                );
+              }
+            }
+
+            return Card(
+              margin: const EdgeInsets.symmetric(vertical: 8),
+              elevation: 2,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: userId != null ? openProfile : null,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // User row with navigation to profile
+                      GestureDetector(
+                        onTap: openProfile,
+                        child: Row(
+                          children: [
+                            CircleAvatar(
+                              radius: 20,
+                              backgroundImage: userPhotoURL != null
+                                  ? NetworkImage(userPhotoURL)
+                                  : null,
+                              child: userPhotoURL == null
+                                  ? Text(
+                                      displayName[0].toUpperCase(),
+                                      style: const TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    )
+                                  : null,
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                displayName,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 15,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+
+                      // Type + time
+                      Row(
+                        children: [
+                          Icon(icon, color: Theme.of(context).primaryColor, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              type,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                            ),
+                          ),
+                          Text(
+                            timeLabel,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey.shade600,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+
+                      // Description with hashtags
+                      RichText(
+                        text: TextSpan(
+                          children: buildTextWithHashtag(context, desc),
+                          style: const TextStyle(
+                            fontSize: 14,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+
+                      // Images
+                      if (imageUrls.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          height: 150,
+                          child: ListView.builder(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: imageUrls.length,
+                            itemBuilder: (ctx, index) {
+                              return Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Image.network(
+                                    imageUrls[index],
+                                    width: 150,
+                                    height: 150,
+                                    fit: BoxFit.cover,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+
+                      const SizedBox(height: 8),
+
+                      // Actions
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Row(
+                            children: [
+                              IconButton(
+                                icon: Icon(
+                                  isLiked ? Icons.favorite : Icons.favorite_border,
+                                  color: isLiked ? Colors.red : Colors.grey,
+                                  size: 20,
+                                ),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                onPressed: () => onToggleLike(postId, likedBy),
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                '$likes',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: Colors.grey.shade700,
+                                ),
+                              ),
+                            ],
+                          ),
+                          Row(
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.comment, size: 20),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                onPressed: () => onShowComments(postId),
+                              ),
+                              const SizedBox(width: 8),
+                              if (user?.uid == userId)
+                                IconButton(
+                                  icon: const Icon(Icons.delete, size: 20),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
+                                  onPressed: () => onDeletePost(postId),
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+// ============================================================================
+// APP BAR
+// ============================================================================
 
 class _CustomAppBar extends StatelessWidget {
   final List<Map<String, String>> regions;
@@ -663,12 +1090,27 @@ class _CustomAppBar extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                'Community Posts',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'LandLedger Home',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Select your region and start mapping your land',
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.9),
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
                 ),
               ),
               Row(
@@ -679,26 +1121,39 @@ class _CustomAppBar extends StatelessWidget {
                     onPressed: onSearchPressed,
                   ),
                   if (user != null)
-                    Container(
-                      margin: const EdgeInsets.only(left: 8),
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: Colors.white.withOpacity(0.8),
-                          width: 2,
+                    GestureDetector(
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => UserProfileScreen(
+                              userId: user!.uid,
+                              isCurrentUser: true,
+                            ),
+                          ),
+                        );
+                      },
+                      child: Container(
+                        margin: const EdgeInsets.only(left: 8),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.8),
+                            width: 2,
+                          ),
                         ),
-                      ),
-                      child: CircleAvatar(
-                        radius: 18,
-                        backgroundColor: theme.colorScheme.secondary,
-                        backgroundImage: user!.photoURL != null
-                            ? NetworkImage(user!.photoURL!)
-                            : null,
-                        child: user!.photoURL == null
-                            ? const Icon(Icons.person, 
-                                color: Colors.white, 
-                                size: 20)
-                            : null,
+                        child: CircleAvatar(
+                          radius: 18,
+                          backgroundColor: theme.colorScheme.secondary,
+                          backgroundImage: user!.photoURL != null
+                              ? NetworkImage(user!.photoURL!)
+                              : null,
+                          child: user!.photoURL == null
+                              ? const Icon(Icons.person,
+                                  color: Colors.white,
+                                  size: 20)
+                              : null,
+                        ),
                       ),
                     ),
                 ],
@@ -877,6 +1332,95 @@ class PostSearchDelegate extends SearchDelegate {
           },
         );
       },
+    );
+  }
+}
+
+// ============================================================================
+// POST CREATION BAR
+// ============================================================================
+
+class _PostCreationBar extends StatelessWidget {
+  final User? user;
+  final VoidCallback onTap;
+
+  const _PostCreationBar({
+    required this.user,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              // User avatar
+              CircleAvatar(
+                radius: 20,
+                backgroundColor: theme.colorScheme.secondary,
+                backgroundImage: user?.photoURL != null
+                    ? NetworkImage(user!.photoURL!)
+                    : null,
+                child: user?.photoURL == null
+                    ? Icon(
+                        Icons.person,
+                        color: Colors.white,
+                        size: 20,
+                      )
+                    : null,
+              ),
+              const SizedBox(width: 12),
+
+              // Placeholder text
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: Colors.grey.shade300,
+                      width: 1,
+                    ),
+                  ),
+                  child: Text(
+                    'Share an update about this region...',
+                    style: TextStyle(
+                      color: Colors.grey.shade600,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+
+              // Image icon
+              IconButton(
+                icon: Icon(
+                  Icons.image,
+                  color: theme.primaryColor,
+                ),
+                onPressed: onTap,
+                tooltip: 'Add photos',
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

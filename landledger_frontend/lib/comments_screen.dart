@@ -19,11 +19,11 @@ class CommentSheet extends StatefulWidget {
   final User? user;
 
   const CommentSheet({
-    Key? key,
+    super.key,
     required this.postId,
     required this.regionId,
     required this.user,
-  }) : super(key: key);
+  });
 
   @override
   State<CommentSheet> createState() => _CommentSheetState();
@@ -334,11 +334,11 @@ class _CommentSheetState extends State<CommentSheet> {
     }
     return CircleAvatar(
       backgroundColor: Colors.blueAccent,
+      radius: 20,
       child: Text(
         userEmail.isNotEmpty ? userEmail[0].toUpperCase() : '?',
         style: const TextStyle(color: Colors.white),
       ),
-      radius: 20,
     );
   }
 
@@ -575,11 +575,11 @@ class _CommentSheetState extends State<CommentSheet> {
                   else if (widget.user != null)
                     CircleAvatar(
                       backgroundColor: const Color.fromARGB(255, 2, 76, 63),
+                      radius: 18,
                       child: Text(
                         widget.user!.email![0].toUpperCase(),
                         style: const TextStyle(color: Colors.white),
                       ),
-                      radius: 18,
                     ),
                   const SizedBox(width: 12),
                   Expanded(

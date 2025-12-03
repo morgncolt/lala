@@ -45,5 +45,11 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>LandLedger uses your camera to capture photos of parcels and documents you attach to posts.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>LandLedger needs access to your photo library so you can select existing parcel images and documents.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>LandLedger may store captured images in your library for your records.</string>
 </dict>
 </plist>

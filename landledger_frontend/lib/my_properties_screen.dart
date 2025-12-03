@@ -9,9 +9,16 @@ import 'package:google_maps_flutter/google_maps_flutter.dart' as gmap;
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart' as ll;
+import 'dart:io' show Platform;                  // ADD
+import 'package:flutter/foundation.dart' show kIsWeb; // ADD
+
 
 import 'landledger_screen.dart';
 import 'map_screen.dart';
+import 'widgets/consent.dart';
+import 'widgets/responsive_text.dart';
+import 'widgets/map_error_handler.dart';
+import 'services/identity_service.dart';
 
 class MyPropertiesScreen extends StatefulWidget {
   final String regionId;
@@ -47,11 +54,8 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
   final List<String> _documentIds = [];
 
   bool _isLoading = false;
-  bool _hasMore = true; // applies to legacy listing pagination
-  DocumentSnapshot? _lastDocument; // legacy paging
   final ScrollController _scrollController = ScrollController();
   final User? _user = FirebaseAuth.instance.currentUser;
-  Timer? _debounce;
 
   List<ll.LatLng>? _selectedPolygon;
   bool _showPolygonInfo = false;
@@ -63,8 +67,12 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
   final Map<String, ll.LatLng?> _centerById = {};
   final Map<String, gmap.GoogleMapController?> _gControllerById = {};
 
+  
+
   String _searchQuery = '';
   Timer? _searchDebounce;
+
+  StreamSubscription<QuerySnapshot>? _propsSub;
 
   gmap.LatLng _g(ll.LatLng p) => gmap.LatLng(p.latitude, p.longitude);
   List<gmap.LatLng> _gList(List<ll.LatLng> pts) => pts.map(_g).toList();
@@ -82,14 +90,14 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
   @override
   void initState() {
     super.initState();
-    _fetchProperties();
-    _scrollController.addListener(_onScroll);
+    _subscribeProperties();
   }
+ 
 
   @override
   void dispose() {
+    _propsSub?.cancel();
     _scrollController.dispose();
-    _debounce?.cancel();
     _searchDebounce?.cancel();
     for (final ctrl in _gControllerById.values) {
       ctrl?.dispose();
@@ -97,9 +105,138 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     super.dispose();
   }
 
+    // ---- API base to match MapScreen ----
+  String get _apiBase {
+    if (kIsWeb || Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      return 'http://localhost:4000';
+    }
+    if (Platform.isAndroid) return 'http://192.168.0.23:4000';
+    if (Platform.isIOS) return 'http://localhost:4000';
+    return 'http://localhost:4000';
+  }
+
+  String _prettyAdmId(String raw) => raw.replaceFirst(RegExp(r'\s*#\d+$'), '');
+
+  String? _deriveAdm1BaseFromProp(Map<String, dynamic> prop) {
+    final a = (prop['adm1Base'] ?? '').toString();
+    if (a.isNotEmpty) return a;
+    final b = (prop['adm1Id'] ?? '').toString();
+    if (b.isNotEmpty) return _prettyAdmId(b);
+    return null; // unknown; we can still delete user ADM0 + legacy and sweep
+  }
+
+  Future<void> _tryDeleteOnBlockchain(String? parcelId) async {
+    if (parcelId == null || parcelId.isEmpty) return;
+    try {
+      final uri = Uri.parse('$_apiBase/api/landledger/delete/$parcelId');
+      final del = await http.delete(uri);
+      if (del.statusCode >= 200 && del.statusCode < 300) return;
+      // fallback (if your server expects POST)
+      await http.post(uri);
+    } catch (e) {
+      debugPrint('⚠️ Blockchain delete error: $e');
+    }
+  }
+
+  /// Delete the obvious paths (user copies always; public copies if allowed).
+  Future<void> _deleteKnownPaths({
+    required String uid,
+    required String regionId,
+    required String propId,
+    String? adm1Base,
+  }) async {
+    final fs = FirebaseFirestore.instance;
+
+    // --- USER SIDE (do this first; guaranteed by rules) ---
+    final userBatch = fs.batch();
+    // USER / ADM0
+    userBatch.delete(fs.collection('users').doc(uid)
+        .collection('regions').doc(regionId)
+        .collection('properties').doc(propId));
+    // USER / ADM1
+    if (adm1Base != null && adm1Base.isNotEmpty) {
+      userBatch.delete(fs.collection('users').doc(uid)
+          .collection('regions').doc(regionId)
+          .collection('adm1').doc(adm1Base)
+          .collection('properties').doc(propId));
+    }
+    // Legacy flat
+    userBatch.delete(fs.collection('users').doc(uid)
+        .collection('regions').doc(propId));
+    await userBatch.commit();
+
+    // --- PUBLIC SIDE (may be blocked by rules; ignore permission errors) ---
+    try {
+      final pubBatch = fs.batch();
+      // PUBLIC / ADM0
+      pubBatch.delete(fs.collection('regions').doc(regionId)
+          .collection('properties').doc(propId));
+      // PUBLIC / ADM1
+      if (adm1Base != null && adm1Base.isNotEmpty) {
+        pubBatch.delete(fs.collection('regions').doc(regionId)
+            .collection('adm1').doc(adm1Base)
+            .collection('properties').doc(propId));
+      }
+      await pubBatch.commit();
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        debugPrint('Public deletes blocked by rules — user copies cleaned.');
+      } else {
+        rethrow;
+      }
+    }
+  }
+
+  /// Sweep *any* leftover copies via collectionGroup (user + public).
+  /// Sweep *any* leftover copies via collectionGroup, but avoid composite indexes.
+  Future<void> _collectionGroupSweep({
+    required String uid,
+    required String regionId,
+    required String propId,
+  }) async {
+    final fs = FirebaseFirestore.instance;
+
+    try {
+      // Single-field filter: avoids composite index on (ownerUid, regionId, __name__)
+      final q = fs.collectionGroup('properties')
+          .where('id', isEqualTo: propId);
+
+      final snap = await q.get();
+      if (snap.docs.isEmpty) return;
+
+      const int chunk = 200;
+      for (int i = 0; i < snap.docs.length; i += chunk) {
+        final slice = snap.docs.skip(i).take(chunk).toList();
+        final b = fs.batch();
+        for (final d in slice) {
+          // Optional: sanity check fields before delete
+          final data = d.data() as Map<String, dynamic>? ?? const {};
+          if (data['ownerUid'] == uid && data['regionId'] == regionId) {
+            b.delete(d.reference);
+          }
+        }
+        try {
+          await b.commit();
+        } on FirebaseException catch (e) {
+          // Ignore permission issues to keep UX smooth
+          if (e.code != 'permission-denied') rethrow;
+        }
+      }
+    } on FirebaseException catch (e) {
+      // If Firestore still wants an index, skip the sweep—primary deletes already ran.
+      if (e.code == 'failed-precondition') {
+        debugPrint('ℹ️ Skipping sweep (index required). Primary deletes already completed.');
+        return;
+      }
+      rethrow;
+    }
+  }
+
+
+
   // ---------- Networking helpers ----------
   Future<Map<String, dynamic>?> fetchLandRecord(String parcelId) async {
-    final url = Uri.parse('http://10.0.2.2:4000/api/landledger/$parcelId');
+    final url = Uri.parse('http://192.168.0.23:4000/api/landledger/$parcelId');
     try {
       final response = await http.get(url).timeout(const Duration(seconds: 5));
       if (response.statusCode == 200) {
@@ -125,29 +262,18 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     }
   }
 
-  // ---------- Paging / search ----------
-  void _onScroll() {
-    if (_debounce?.isActive ?? false) _debounce!.cancel();
-    _debounce = Timer(const Duration(milliseconds: 200), () {
-      if (_scrollController.position.pixels >=
-          _scrollController.position.maxScrollExtent - 200) {
-        if (!_isLoading && _hasMore) _fetchProperties();
-      }
-    });
-  }
-
   List<Map<String, dynamic>> get _filteredProperties {
     if (_searchQuery.isEmpty) return _userProperties;
     final q = _searchQuery.toLowerCase();
     return _userProperties.where((prop) {
       return (prop['title_number']?.toString().toLowerCase().contains(q) ?? false) ||
+          (prop['alias']?.toString().toLowerCase().contains(q) ?? false) ||
           (prop['description']?.toString().toLowerCase().contains(q) ?? false) ||
-          (prop['wallet_address']?.toString().toLowerCase().contains(q) ?? false);
+          (prop['wallet_address']?.toString().toLowerCase().contains(q) ?? false) ||
+          (prop['adm1Base']?.toString().toLowerCase().contains(q) ?? false);
     }).toList();
   }
 
-  /// Normalizes a Firestore doc (from either path) to a renderable property + polygon.
-  /// Returns a _NormalizedProp or null if malformed.
   _NormalizedProp? _normalizeDoc(DocumentSnapshot d) {
     final data = d.data();
     if (data is! Map<String, dynamic>) return null;
@@ -171,135 +297,74 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     );
   }
 
-  /// Fetch from BOTH:
-  /// 1) NEW nested: users/{uid}/regions/{regionIdCanonical}/properties (complete list)
-  /// 2) LEGACY flat: users/{uid}/regions (paged) — keep pagination behavior for large old sets
-  Future<void> _fetchProperties() async {
-    if (_user == null || _isLoading) return;
-
+  /// Real-time listener using collectionGroup('properties') filtered by owner+region.
+  void _subscribeProperties() {
+    if (_user == null) return;
     setState(() => _isLoading = true);
 
     final regionIdCanonical = canonicalizeRegionId(widget.regionId);
-    final mergedById = <String, _NormalizedProp>{};
 
-    try {
-      // ---- 1) NEW nested path (full read for this region) ----
-      final nestedSnap = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(_user!.uid)
-          .collection('regions')
-          .doc(regionIdCanonical)
-          .collection('properties')
-          .orderBy('updatedAt', descending: true)
-          .get();
+    // Listen to ALL user properties in this country, regardless of ADM1 folder.
+    final q = FirebaseFirestore.instance
+        .collectionGroup('properties')
+        .where('ownerUid', isEqualTo: _user!.uid)
+        .where('regionId', isEqualTo: regionIdCanonical);
 
-      for (final d in nestedSnap.docs) {
+    _propsSub = q.snapshots().listen((snap) {
+      final merged = <String, _NormalizedProp>{};
+
+      for (final d in snap.docs) {
         final norm = _normalizeDoc(d);
         if (norm != null) {
-          mergedById[norm.stableId] = norm;
+          merged[norm.stableId] = norm;
         }
       }
 
-      // ---- 2) LEGACY flat path (paged) ----
-      QuerySnapshot<Map<String, dynamic>>? legacySnap;
-
-      try {
-        var legacyQuery = FirebaseFirestore.instance
-            .collection('users')
-            .doc(_user!.uid)
-            .collection('regions')
-            .orderBy('timestamp', descending: true)
-            .limit(10);
-
-        if (_lastDocument != null) {
-          legacyQuery = legacyQuery.startAfterDocument(_lastDocument!);
-        }
-
-        legacySnap = await legacyQuery.get();
-      } catch (e) {
-        // If legacy path errors, keep going with what we have from nested
-        debugPrint('Legacy fetch error: $e');
-        legacySnap = null;
-      }
-
-      if (legacySnap == null || legacySnap.docs.isEmpty) {
-        // No more legacy docs to page through
-        _hasMore = false;
-      } else {
-        _lastDocument = legacySnap.docs.last;
-
-        for (final d in legacySnap.docs) {
-          final norm = _normalizeDoc(d);
-          if (norm == null) continue;
-
-          // Only include legacy entries for this region (match by canonical or human)
-          final regionField = (norm.prop['region'] ?? norm.prop['regionId'] ?? '').toString();
-          final matches = canonicalizeRegionId(regionField) == regionIdCanonical ||
-              regionField.trim().toLowerCase() == widget.regionId.trim().toLowerCase();
-
-          if (!matches) continue;
-
-          // Prefer the NEW nested version if already present; otherwise add legacy
-          if (!mergedById.containsKey(norm.stableId)) {
-            mergedById[norm.stableId] = norm;
-          }
-        }
-      }
-
-      // ---- Merge into UI lists (append-only to support lazy loading on legacy) ----
-      // We append only the entries that are not already present in _documentIds
-      final newEntries = mergedById.values
-          .where((e) => !_documentIds.contains(e.stableId))
-          .toList();
-
-      // Sort newest first by 'updatedAt' (fallback to 'timestamp')
-      newEntries.sort((a, b) {
-        final atA = a.prop['updatedAt'] ?? a.prop['timestamp'];
-        final atB = b.prop['updatedAt'] ?? b.prop['timestamp'];
-        final ta = (atA is Timestamp) ? atA.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
-        final tb = (atB is Timestamp) ? atB.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
-        return tb.compareTo(ta);
-      });
+      // Sort newest first client-side (fallback to timestamp if updatedAt absent)
+      final list = merged.values.toList()
+        ..sort((a, b) {
+          final atA = a.prop['updatedAt'] ?? a.prop['timestamp'];
+          final atB = b.prop['updatedAt'] ?? b.prop['timestamp'];
+          final ta = (atA is Timestamp) ? atA.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+          final tb = (atB is Timestamp) ? atB.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+          return tb.compareTo(ta);
+        });
 
       setState(() {
-        for (final n in newEntries) {
-          _userProperties.add(n.prop);
-          _polygonPointsList.add(n.polygon);
-          _documentIds.add(n.stableId);
+        _userProperties
+          ..clear()
+          ..addAll(list.map((e) => e.prop));
+        _polygonPointsList
+          ..clear()
+          ..addAll(list.map((e) => e.polygon));
+        _documentIds
+          ..clear()
+          ..addAll(list.map((e) => e.stableId));
 
+        // Ensure per-card state exists
+        for (final n in list) {
           _satelliteViewById.putIfAbsent(n.stableId, () => false);
           _zoomById.putIfAbsent(n.stableId, () => 15.0);
           _centerById.putIfAbsent(n.stableId, () => _centroid(n.polygon));
         }
+
+        _isLoading = false;
       });
-    } catch (e) {
-      debugPrint('Error fetching properties: $e');
+    }, onError: (e) {
+      debugPrint('❌ properties stream error: $e');
       if (mounted) {
+        setState(() => _isLoading = false);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Error loading properties')),
         );
       }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
+    });
   }
 
   Future<void> _refreshAll() async {
-    setState(() {
-      _userProperties.clear();
-      _polygonPointsList.clear();
-      _documentIds.clear();
-      _hasMore = true;
-      _lastDocument = null;
-      _selectedPolygon = null;
-      _showPolygonInfo = false;
-      _satelliteViewById.clear();
-      _zoomById.clear();
-      _centerById.clear();
-      _gControllerById.clear();
-      _searchQuery = '';
-    });
-    await _fetchProperties();
+    // Pull-to-refresh just replays current snapshot; nudge UI.
+    setState(() {});
+    await Future<void>.delayed(const Duration(milliseconds: 150));
   }
 
   // ---------- Interactions ----------
@@ -329,10 +394,11 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
     );
   }
 
-  Future<void> _deleteProperty(int index) async {
+  Future<void> _deletePropertyById({
+    required String docId,                // stable ID for the property
+    required Map<String, dynamic> prop,   // the doc data you already have
+  }) async {
     if (_user == null || !mounted) return;
-
-    final docId = _documentIds[index];
 
     final confirm = await showDialog<bool>(
       context: context,
@@ -340,68 +406,56 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
         title: const Text('Delete Property'),
         content: const Text('Are you sure you want to delete this property?'),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Delete'),
-          ),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Delete')),
         ],
       ),
     );
-
     if (confirm != true) return;
 
     try {
-      final regionIdCanonical = canonicalizeRegionId(widget.regionId);
+      final uid = _user!.uid;
+      final regionId = canonicalizeRegionId((prop['regionId'] ?? widget.regionId).toString());
+      final adm1Base = _deriveAdm1BaseFromProp(prop);
+      final blockchainId = (prop['blockchainId'] ?? prop['id'] ?? prop['title_number'] ?? docId).toString();
 
-      // Delete in BOTH locations to stay consistent with MapScreen.savePolygon
-      final legacyRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(_user!.uid)
-          .collection('regions')
-          .doc(docId);
+      // 1) Known paths by direct refs (no index needed)
+      await _deleteKnownPaths(
+        uid: uid,
+        regionId: regionId,
+        propId: docId,
+        adm1Base: adm1Base,
+      );
 
-      final nestedRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(_user!.uid)
-          .collection('regions')
-          .doc(regionIdCanonical)
-          .collection('properties')
-          .doc(docId);
+      // 2) Optional sweep (already index-safe from last message)
+      await _collectionGroupSweep(
+        uid: uid,
+        regionId: regionId,
+        propId: docId,
+      );
 
-      final batch = FirebaseFirestore.instance.batch();
-      batch.delete(legacyRef);
-      batch.delete(nestedRef);
-      await batch.commit();
+      // 3) Fire-and-forget blockchain delete
+      // ignore: unawaited_futures
+      _tryDeleteOnBlockchain(blockchainId);
+
+      // 4) DO NOT mutate _userProperties/_polygonPointsList/_documentIds here.
+      //    The stream listener will emit a new snapshot and rebuild safely.
 
       if (!mounted) return;
-
-      setState(() {
-        _userProperties.removeAt(index);
-        _polygonPointsList.removeAt(index);
-        _documentIds.removeAt(index);
-
-        _satelliteViewById.remove(docId);
-        _zoomById.remove(docId);
-        _centerById.remove(docId);
-        _gControllerById.remove(docId);
-      });
-
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Property deleted successfully')),
+        const SnackBar(content: Text('Property deleted')),
       );
     } catch (e) {
-      debugPrint('Failed to delete: $e');
+      debugPrint('❌ Delete failed: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to delete property')),
+          SnackBar(content: Text('Failed to delete property: $e')),
         );
       }
     }
   }
+
+
 
   String formatArea(dynamic value) {
     if (value == null || value == 0) return 'Area: Unknown';
@@ -522,7 +576,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                       onSelected: (value) async {
                         switch (value) {
                           case 'delete':
-                            await _deleteProperty(originalIndex);
+                            await _deletePropertyById( docId: docId, prop: prop, );
                             break;
                           case 'toggle_view':
                             setState(() {
@@ -539,6 +593,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                                   highlightPolygon: poly,
                                   startDrawing: false,
                                   centerOnRegion: false,
+                                  showBackArrow: true,
                                 ),
                               ),
                             );
@@ -640,7 +695,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(
-                          prop['wallet_address'] ?? 'No wallet',
+                          formatFriendlyWalletSync(prop['wallet_address'] ?? ''),
                           style: const TextStyle(fontSize: 12),
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -761,7 +816,7 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
                 ),
                 const SizedBox(height: 12),
                 _buildInfoRow('Description', docData['description']),
-                _buildInfoRow('Wallet', docData['wallet_address']),
+                _buildInfoRow('Wallet', formatFriendlyWalletSync(docData['wallet_address'] ?? '')),
                 _buildInfoRow('Area', _areaFormatted(docData['area_sqkm'] as num?)),
                 if (docData['timestamp'] != null)
                   _buildInfoRow(
@@ -824,6 +879,11 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
   }
 
   Future<void> _openCreator() async {
+    final ok = await confirmOnChain(context,
+      title: 'Create Parcel',
+      summary: 'You are about to create a new parcel. This action will be signed by your identity.');
+    if (!ok) return;
+
     final created = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
@@ -831,10 +891,12 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
           regionId: widget.regionId,
           geojsonPath: widget.geojsonPath,
           startDrawing: true,
+          showBackArrow: true,
         ),
       ),
     );
     if (created == true) {
+      // Stream will auto-update; this nudges the UI state.
       await _refreshAll();
     }
   }
@@ -868,13 +930,13 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
           child: TextField(
             decoration: const InputDecoration(
               prefixIcon: Icon(Icons.search, size: 20),
-              hintText: 'Search properties...',
+              hintText: 'Search properties (title, alias, ADM1, wallet)...',
               border: InputBorder.none,
               contentPadding: EdgeInsets.symmetric(vertical: 8),
             ),
             onChanged: (value) {
               if (_searchDebounce?.isActive ?? false) _searchDebounce!.cancel();
-              _searchDebounce = Timer(const Duration(milliseconds: 500), () {
+              _searchDebounce = Timer(const Duration(milliseconds: 300), () {
                 setState(() {
                   _searchQuery = value.toLowerCase();
                 });
@@ -895,16 +957,22 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
               setState(() {
                 switch (value) {
                   case 'newest':
-                    _userProperties.sort(
-                      (a, b) => (b['timestamp'] ?? b['updatedAt'])
-                          .compareTo(a['timestamp'] ?? a['updatedAt']),
-                    );
+                    _userProperties.sort((a, b) {
+                      final atA = a['updatedAt'] ?? a['timestamp'];
+                      final atB = b['updatedAt'] ?? b['timestamp'];
+                      final ta = (atA is Timestamp) ? atA.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+                      final tb = (atB is Timestamp) ? atB.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+                      return tb.compareTo(ta);
+                    });
                     break;
                   case 'oldest':
-                    _userProperties.sort(
-                      (a, b) => (a['timestamp'] ?? a['updatedAt'])
-                          .compareTo(b['timestamp'] ?? b['updatedAt']),
-                    );
+                    _userProperties.sort((a, b) {
+                      final atA = a['updatedAt'] ?? a['timestamp'];
+                      final atB = b['updatedAt'] ?? b['timestamp'];
+                      final ta = (atA is Timestamp) ? atA.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+                      final tb = (atB is Timestamp) ? atB.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+                      return ta.compareTo(tb);
+                    });
                     break;
                   case 'largest':
                     _userProperties.sort((a, b) =>
@@ -951,14 +1019,8 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
               child: ListView.builder(
                 controller: _scrollController,
                 padding: const EdgeInsets.only(bottom: 80),
-                itemCount: displayed.length + (_hasMore ? 1 : 0),
+                itemCount: displayed.length,
                 itemBuilder: (context, idx) {
-                  if (idx == displayed.length) {
-                    return const Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Center(child: CircularProgressIndicator()),
-                    );
-                  }
                   final prop = displayed[idx];
                   final originalIndex = _userProperties.indexOf(prop);
                   if (originalIndex < 0) return const SizedBox.shrink();
@@ -967,6 +1029,13 @@ class _MyPropertiesScreenState extends State<MyPropertiesScreen> {
               ),
             ),
           _buildPolygonInfoCard(),
+          if (_isLoading)
+            const Positioned.fill(
+              child: IgnorePointer(
+                ignoring: true,
+                child: Center(child: CircularProgressIndicator()),
+              ),
+            ),
         ],
       ),
       floatingActionButton: FloatingActionButton(

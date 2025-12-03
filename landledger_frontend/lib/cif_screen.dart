@@ -1,22 +1,24 @@
-import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import 'package:web3dart/web3dart.dart';
-import 'mock_euthereumservice.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'hashtag_utils.dart';
-import 'dart:io';
-import 'package:image_picker/image_picker.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'map_screen.dart';
+import 'dart:io';
+import 'dart:math' as math;
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
-import 'dart:math' as math; // use math.Random, math.min, math.max
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart';
 
+import 'map_screen.dart';
+import 'hashtag_utils.dart' as tags;
+
 class CifScreen extends StatefulWidget {
-  const CifScreen({Key? key}) : super(key: key);
+  final String? initialParcelId; // Optional: start on a specific property block
+
+  const CifScreen({super.key, this.initialParcelId});
 
   @override
   _CifScreenState createState() => _CifScreenState();
@@ -24,9 +26,11 @@ class CifScreen extends StatefulWidget {
 
 class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
+
+  // Form + state
   final _formKey = GlobalKey<FormState>();
   final TextEditingController _descriptionController = TextEditingController();
-  final TextEditingController _amountController = TextEditingController();
+  final TextEditingController _amountController = TextEditingController(text: '50000');
   final TextEditingController _minVotersController = TextEditingController();
 
   bool _isPublic = true;
@@ -36,74 +40,261 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
   final ImagePicker _picker = ImagePicker();
   List<XFile> _selectedImages = [];
 
+  // Feed data (Firestore)
   List<Map<String, dynamic>> _projects = [];
-  String? _selectedPropertyId;
-  bool _isPropertyVerified = false;
+  List<Map<String, dynamic>> get _filteredPublicProjects =>
+      _projects.where((p) => p['isPublic'] == true).toList();
+
+  List<Map<String, dynamic>> get _filteredPrivateProjects {
+    final me = FirebaseAuth.instance.currentUser?.uid;
+    return _projects.where((p) => p['isPublic'] == false && (p['ownerId'] == me)).toList();
+  }
+
+  // User properties (owned on-chain)
   List<Map<String, dynamic>> _userProperties = []; // [{'id': 'LL-XXX-YYYY', 'verified': true}]
-  final String projectId = DateTime.now().millisecondsSinceEpoch.toString();
+  String? _selectedPropertyId; // when creating a private project
+  bool _isPropertyVerified = false;
+
+  // By-Block tab state (chaincode-backed)
+  String? _activeParcelId;
+  List<Map<String, dynamic>> _parcelProjects = [];
+
+  // UI
   bool _showSubmitForm = false;
   double? _costPerVoter;
 
+  // Local verification cache
   final _verificationCache = <String, bool>{};
 
+  // ------------ Lifecycle ------------
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
-    _amountController.text = '50000';
-    loadCifProjects();
+    _tabController = TabController(length: 4, vsync: this); // Community / Private / By Block / Contractors
+    _activeParcelId = widget.initialParcelId;
     _loadUserProperties();
+    loadCifProjects();
+    if (_activeParcelId != null) {
+      _loadProjectsForParcel(_activeParcelId!);
+    }
   }
 
-  // ---------- Data Loading ----------
+  @override
+  void dispose() {
+    _descriptionController.dispose();
+    _amountController.dispose();
+    _minVotersController.dispose();
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  // ------------ Misc helpers ------------
+  String _apiBase() {
+    if (kIsWeb) return 'http://localhost:4000';
+    if (Platform.isAndroid) return 'http://192.168.0.23:4000';
+    return 'http://localhost:4000';
+  }
+
+  String _randomString(int length) {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    final r = math.Random();
+    return String.fromCharCodes(
+      Iterable.generate(length, (_) => chars.codeUnitAt(r.nextInt(chars.length))),
+    );
+  }
+
+  String _generateProjectId(bool isPublic, String propertyId) {
+    // LL-<PB|PV>-<City>-<last4><ts4>
+    String city = 'GEN';
+    try {
+      final parts = propertyId.split('-');
+      if (parts.length >= 2) city = parts[1];
+    } catch (_) {}
+
+    String lastFour = propertyId.length >= 4
+        ? propertyId.substring(propertyId.length - 4)
+        : _randomString(4);
+
+    final typePrefix = isPublic ? 'PB' : 'PV';
+    final ts = DateTime.now().millisecondsSinceEpoch.toString();
+    final ts4 = ts.substring(ts.length - 4);
+
+    return 'LL-$typePrefix-$city-$lastFour$ts4';
+  }
+
+  void _toggleSubmitForm() => setState(() => _showSubmitForm = !_showSubmitForm);
+
+  void _updateCostPerVoter() {
+    final amount = double.tryParse(_amountController.text);
+    final voters = int.tryParse(_minVotersController.text);
+    if (amount != null && voters != null && voters > 0) {
+      setState(() => _costPerVoter = amount / voters);
+    } else {
+      setState(() => _costPerVoter = null);
+    }
+  }
+
+  // ------------ Data Loading (Firestore feeds) ------------
+  Future<void> loadCifProjects() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      // 1) Public projects from everyone (collectionGroup)
+      final pubSnap = await FirebaseFirestore.instance
+          .collectionGroup('projects')
+          .where('isPublic', isEqualTo: true)
+          .get();
+
+      // 2) Private projects belonging to the current user only
+      final myPrivSnap = await FirebaseFirestore.instance
+          .collection('cif_projects')
+          .doc(user.uid)
+          .collection('projects')
+          .where('isPublic', isEqualTo: false)
+          .get();
+
+      final merged = <Map<String, dynamic>>[];
+
+      for (final doc in pubSnap.docs) {
+        final data = Map<String, dynamic>.from(doc.data());
+        data['ownerId'] ??= doc.reference.parent.parent?.id; // backfill best-effort
+        merged.add(data);
+      }
+
+      for (final doc in myPrivSnap.docs) {
+        final data = Map<String, dynamic>.from(doc.data());
+        data['ownerId'] ??= user.uid; // private projects definitely yours
+        merged.add(data);
+      }
+
+      setState(() => _projects = merged);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load CIF projects: $e')),
+      );
+    }
+  }
 
   Future<void> _loadUserProperties() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
     try {
-      final snapshot = await FirebaseFirestore.instance
+      // Pull ONLY the logged-in user's parcels from Firestore
+      final snap = await FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid)
           .collection('regions')
           .get();
 
-      final loaded = <Map<String, dynamic>>[];
-      for (var doc in snapshot.docs) {
+      // Verify each parcel on-chain (in parallel)
+      final futures = snap.docs.map((doc) async {
         final data = doc.data();
-        final id = (data['title_number'] ?? doc.id).toString();
-        final verified = await _verifyPropertyOnBlockchain(id);
-        loaded.add({'id': id, 'verified': verified});
-      }
+        final id = (data['title_number'] ?? data['titleNumber'] ?? doc.id).toString();
+        if (id.isEmpty) return null;
 
-      setState(() => _userProperties = loaded);
+        final verified = await _verifyPropertyOnBlockchain(id);
+        if (!verified) return null; // include only those that exist on-chain
+
+        return {'id': id, 'verified': true};
+      }).toList();
+
+      final results = await Future.wait(futures);
+      final list = results.whereType<Map<String, dynamic>>().toList()
+        ..sort((a, b) => (a['id'] as String).compareTo(b['id'] as String));
+
+      setState(() {
+        _userProperties = list;
+
+        // Keep By-Block selection in sync
+        if (_userProperties.isEmpty) {
+          _activeParcelId = null;
+          _parcelProjects = [];
+        } else if (_activeParcelId == null ||
+            !_userProperties.any((p) => p['id'] == _activeParcelId)) {
+          _activeParcelId = _userProperties.first['id'] as String;
+          _loadProjectsForParcel(_activeParcelId!);
+        }
+      });
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to load properties: $e')),
+        SnackBar(content: Text('Failed to load your properties: $e')),
       );
     }
   }
 
- Future<void> loadCifProjects() async {
-    // Show all public projects from all users
-    final snapshot = await FirebaseFirestore.instance
-        .collectionGroup('projects')
-        .where('isPublic', isEqualTo: true)
-        // Optional but recommended for stable ordering/pagination:
-        // .orderBy('createdAt', descending: true)
-        .get();
-
-    setState(() {
-      _projects = snapshot.docs.map((doc) {
-        final data = doc.data();
-        // Safety fallback if some old docs don’t have ownerId
-        data['ownerId'] ??= doc.reference.parent.parent?.id;
-        return Map<String, dynamic>.from(data);
-      }).toList();
-    });
+  // ------------ By-block (chaincode) projects ------------
+  Future<void> _loadProjectsForParcel(String parcelId) async {
+    try {
+      final url = '${_apiBase()}/api/landledger/$parcelId/projects';
+      final resp = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 15));
+      if (resp.statusCode == 200) {
+        final list = json.decode(resp.body) as List<dynamic>;
+        setState(() {
+          _activeParcelId = parcelId;
+          _parcelProjects = list.map((e) => Map<String, dynamic>.from(e)).toList();
+        });
+      } else {
+        throw Exception('HTTP ${resp.statusCode} ${resp.body}');
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load projects for $parcelId: $e')),
+      );
+    }
   }
 
+  // ------------ Verification (API) ------------
+  Future<bool> _verifyPropertyOnBlockchain(String propertyId) async {
+    try {
+      if (_verificationCache.containsKey(propertyId)) {
+        return _verificationCache[propertyId]!;
+      }
 
+      if (!propertyId.startsWith('LL-') || propertyId.length < 10) {
+        _verificationCache[propertyId] = false;
+        return false;
+      }
+
+      final url = '${_apiBase()}/api/landledger/verify/$propertyId';
+      final response = await http
+          .get(Uri.parse(url), headers: {'Content-Type': 'application/json'})
+          .timeout(const Duration(seconds: 10));
+
+      bool ok = false;
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        ok = data['exists'] == true;
+      }
+      _verificationCache[propertyId] = ok;
+      return ok;
+    } catch (_) {
+      _verificationCache[propertyId] = false;
+      return false;
+    }
+  }
+
+  void clearVerificationCache() => _verificationCache.clear();
+
+  // ------------ Uploads ------------
+  Future<void> _pickImages() async {
+    final picked = await _picker.pickMultiImage();
+    setState(() => _selectedImages = picked);
+  }
+
+  Future<List<String>> _uploadImages(String projectId, String userId) async {
+    final storage = FirebaseStorage.instance;
+    final urls = <String>[];
+    for (var image in _selectedImages) {
+      final ref = storage.ref().child('cif_projects/$userId/$projectId/${image.name}');
+      await ref.putFile(File(image.path));
+      urls.add(await ref.getDownloadURL());
+    }
+    return urls;
+  }
+
+  // ------------ Create / Vote ------------
   Future<void> saveCifProject(String userId, Map<String, dynamic> projectData) async {
     final docRef = FirebaseFirestore.instance
         .collection('cif_projects')
@@ -128,104 +319,6 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
       _projects.removeWhere((proj) => proj['id'] == projectId);
     });
   }
-
-  // ---------- Blockchain Verify (cached) ----------
-
-  Future<bool> _verifyPropertyOnBlockchain(String propertyId) async {
-    try {
-      if (_verificationCache.containsKey(propertyId)) {
-        return _verificationCache[propertyId]!;
-      }
-
-      if (!propertyId.startsWith('LL-') || propertyId.length < 10) {
-        _verificationCache[propertyId] = false;
-        return false;
-      }
-
-      final url = 'http://10.0.2.2:4000/api/landledger/verify/$propertyId';
-      final response = await http
-          .get(Uri.parse(url), headers: {'Content-Type': 'application/json'})
-          .timeout(const Duration(seconds: 10));
-
-      bool ok = false;
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        ok = data['exists'] == true;
-      }
-      _verificationCache[propertyId] = ok;
-      return ok;
-    } catch (e) {
-      _verificationCache[propertyId] = false;
-      return false;
-    }
-  }
-
-  void clearVerificationCache() => _verificationCache.clear();
-
-  // ---------- Helpers ----------
-
-  String _generateProjectId(bool isPublic, String propertyId) {
-    // LL-<PB|PV>-<City>-<last4><ts4>
-    String city = 'GEN';
-    try {
-      final parts = propertyId.split('-');
-      if (parts.length >= 2) city = parts[1];
-    } catch (_) {}
-
-    String lastFour = propertyId.length >= 4
-        ? propertyId.substring(propertyId.length - 4)
-        : _randomString(4);
-
-    final typePrefix = isPublic ? 'PB' : 'PV';
-    final ts = DateTime.now().millisecondsSinceEpoch.toString();
-    final ts4 = ts.substring(ts.length - 4);
-
-    return 'LL-$typePrefix-$city-$lastFour$ts4';
-  }
-
-  String _randomString(int length) {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    final r = math.Random();
-    return String.fromCharCodes(
-      Iterable.generate(length, (_) => chars.codeUnitAt(r.nextInt(chars.length))),
-    );
-  }
-
-  void _updateCostPerVoter() {
-    final amount = double.tryParse(_amountController.text);
-    final voters = int.tryParse(_minVotersController.text);
-    if (amount != null && voters != null && voters > 0) {
-      setState(() => _costPerVoter = amount / voters);
-    } else {
-      setState(() => _costPerVoter = null);
-    }
-  }
-
-  void _toggleSubmitForm() => setState(() => _showSubmitForm = !_showSubmitForm);
-
-  List<Map<String, dynamic>> get _filteredPublicProjects =>
-      _projects.where((p) => p['isPublic'] == true).toList();
-
-  List<Map<String, dynamic>> get _filteredPrivateProjects =>
-      _projects.where((p) => p['isPublic'] == false).toList();
-
-  Future<void> _pickImages() async {
-    final picked = await _picker.pickMultiImage();
-    if (picked != null) setState(() => _selectedImages = picked);
-  }
-
-  Future<List<String>> _uploadImages(String projectId, String userId) async {
-    final storage = FirebaseStorage.instance;
-    final urls = <String>[];
-    for (var image in _selectedImages) {
-      final ref = storage.ref().child('cif_projects/$userId/$projectId/${image.name}');
-      await ref.putFile(File(image.path));
-      urls.add(await ref.getDownloadURL());
-    }
-    return urls;
-  }
-
-  // ---------- Submit public/private project ----------
 
   Future<void> _submitContract() async {
     if (!_formKey.currentState!.validate()) return;
@@ -252,70 +345,72 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
 
     setState(() => _isLoading = true);
     try {
-      final eth = Provider.of<MockEthereumService>(context, listen: false);
-      await eth.createContract(
-        _isPublic,
-        _descriptionController.text,
-        EtherAmount.fromUnitAndValue(
-          EtherUnit.ether,
-          int.parse(_amountController.text),
-        ),
-      );
-
-      final photoUrls = await _uploadImages(projectId, user.uid);
       final goalAmount = int.parse(_amountController.text);
-      final minVoters = _isPublic ? int.parse(_minVotersController.text) : 0;
-      final amountPerVote = _isPublic ? (goalAmount / minVoters).ceil() : 0;
+      final minVoters  = _isPublic ? int.parse(_minVotersController.text) : 0;
+      final amountPerVote = _isPublic ? (goalAmount / math.max(minVoters, 1)).ceil() : 0;
 
-      String? hashtag;
-      if (!_isPublic && _selectedPropertyId != null) {
-        final propertyDoc = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(user.uid)
-            .collection('regions')
-            .where('title_number', isEqualTo: _selectedPropertyId)
-            .limit(1)
-            .get();
+      final parcelId = _selectedPropertyId ?? _activeParcelId ?? 'LL-GEN-0000';
+      final projectId = _generateProjectId(_isPublic, parcelId);
 
-        if (propertyDoc.docs.isNotEmpty) {
-          final rawAlias = propertyDoc.docs.first.data()['alias'];
-          hashtag = (rawAlias == null) ? null : rawAlias.toString().replaceAll('#', '');
-        }
+      // 1) Create on-chain
+      final payload = {
+        'projectId': projectId,
+        'parcelId': parcelId,
+        'owner': user.uid,
+        'type': _isPublic ? 'public' : 'private',
+        'goal': goalAmount,
+        'requiredVotes': _isPublic ? minVoters : 0,
+        'amountPerVote': _isPublic ? amountPerVote : 0,
+        'titleNumber': parcelId,
+        'description': _descriptionController.text,
+        'createdAt': DateTime.now().toIso8601String(),
+      };
+      final resp = await http.post(
+        Uri.parse('${_apiBase()}/api/projects'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(payload),
+      ).timeout(const Duration(seconds: 20));
+      if (resp.statusCode != 200) {
+        throw Exception('Chaincode create failed: HTTP ${resp.statusCode} ${resp.body}');
       }
 
+      // 2) Mirror to Firestore (feed)
+      final photoUrls = await _uploadImages(projectId, user.uid);
       final newProject = <String, dynamic>{
-        'id': _generateProjectId(_isPublic, _selectedPropertyId ?? 'LL-GEN-0000'),
+        'id': projectId,
         'ownerId': user.uid,
         'title': _isPublic
             ? 'Community Project ${DateTime.now().year}'
-            : 'Private Project ${_selectedPropertyId ?? ''}',
+            : 'Private Project $parcelId',
         'description': _descriptionController.text,
         'amount': goalAmount,
         'isPublic': _isPublic,
         'votes': 0,
         'funded': 0,
         'goal': goalAmount,
-        'requiredVotes': minVoters,
-        'amountPerVote': amountPerVote,
+        'requiredVotes': _isPublic ? minVoters : 0,
+        'amountPerVote': _isPublic ? amountPerVote : 0,
         'voters': <String>[],
         'image': '🛠️',
         'status': 'Pending',
-        'hashtag': hashtag,
+        'hashtag': _linkedHashtag,
         'photoUrls': photoUrls,
-        'propertyId': _selectedPropertyId,
+        'propertyId': parcelId,
         'isVerified': _isPropertyVerified,
         'createdAt': FieldValue.serverTimestamp(),
+        'type': _isPublic ? 'public' : 'private',
       };
-
       await saveCifProject(user.uid, newProject);
       await loadCifProjects();
+      if (_activeParcelId == parcelId) await _loadProjectsForParcel(parcelId);
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(_isPublic
-            ? "Project submitted for community voting!"
-            : "Private project created and verified!")),
+            ? "Project submitted on-chain for community voting!"
+            : "Private project created on-chain!")),
       );
 
+      // Reset form
       _descriptionController.clear();
       _selectedImages.clear();
       _minVotersController.clear();
@@ -324,96 +419,95 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
       _isPropertyVerified = false;
       _toggleSubmitForm();
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error: $e")),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
     } finally {
       setState(() => _isLoading = false);
     }
   }
 
-  // ---------- Voting ----------
-
   Future<void> _handleVote(Map<String, dynamic> project) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    final ownerId = (project['ownerId'] as String?) ?? user.uid;
-    final projectId = project['id'] as String;
-
-    final docRef = FirebaseFirestore.instance
-        .collection('cif_projects')
-        .doc(ownerId)
-        .collection('projects')
-        .doc(projectId);
+    final projectId = project['id'] as String? ?? project['projectId'] as String?;
+    if (projectId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid project id')));
+      return;
+    }
 
     try {
+      // 1) On-chain vote
+      final resp = await http.post(
+        Uri.parse('${_apiBase()}/api/projects/$projectId/vote'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'voter': user.uid}),
+      ).timeout(const Duration(seconds: 15));
+      if (resp.statusCode != 200) {
+        throw Exception('HTTP ${resp.statusCode} ${resp.body}');
+      }
+
+      // 2) Mirror to Firestore (optimistic)
+      final docRef = FirebaseFirestore.instance
+          .collection('cif_projects')
+          .doc(project['ownerId'] ?? user.uid)
+          .collection('projects')
+          .doc(projectId);
+
       await FirebaseFirestore.instance.runTransaction((tx) async {
         final snap = await tx.get(docRef);
-        if (!snap.exists) throw Exception('Project not found');
+        if (!snap.exists) return;
+        final data = Map<String, dynamic>.from(snap.data()!);
 
-        final data = snap.data() as Map<String, dynamic>;
-        final List<dynamic> voters = List.from(data['voters'] ?? []);
-        if (voters.contains(user.uid)) {
-          throw StateError('already_voted');
+        final voters = List<String>.from((data['voters'] ?? []) as List);
+        if (!voters.contains(user.uid)) {
+          voters.add(user.uid);
         }
 
-        final int votes = (data['votes'] ?? 0) + 1;
-        final int requiredVotes = ((data['requiredVotes'] ?? 0) as int) - 1;
-        final int amountPerVote = (data['amountPerVote'] ?? 0) as int;
-        final int goal = (data['goal'] ?? 0) as int;
-        final int currentFunded = (data['funded'] ?? 0) as int;
-
-        final int newRequired = math.max(requiredVotes, 0);
-        final int newFunded = math.min(currentFunded + amountPerVote, goal);
-        final bool completed = (newFunded >= goal) || (newRequired == 0);
-        final String newStatus = completed ? 'Completed' : (data['status'] ?? 'Pending');
+        final goal = (data['goal'] ?? 0) as int;
+        final amountPerVote = (data['amountPerVote'] ?? 0) as int;
+        final newFunded = math.min((data['funded'] ?? 0) + amountPerVote, goal);
+        final newRequired = math.max(((data['requiredVotes'] ?? 0) as int) - 1, 0);
+        final completed = (newFunded >= goal) || (newRequired == 0);
 
         tx.update(docRef, {
-          'votes': votes,
+          'votes': (data['votes'] ?? 0) + 1,
           'requiredVotes': newRequired,
           'funded': newFunded,
-          'voters': FieldValue.arrayUnion([user.uid]),
-          'status': newStatus,
+          'voters': voters,
+          'status': completed ? 'Completed' : (data['status'] ?? 'Pending'),
         });
       });
 
-      // optimistic local update
+      // Local list update if present
       setState(() {
-        final i = _projects.indexWhere((p) => p['id'] == project['id']);
+        final i = _projects.indexWhere((p) => p['id'] == projectId);
         if (i != -1) {
           final updated = Map<String, dynamic>.from(_projects[i]);
-          final int goal = (updated['goal'] ?? 0) as int;
-          final int amountPerVote = (updated['amountPerVote'] ?? 0) as int;
+          final goal = (updated['goal'] ?? 0) as int;
+          final amountPerVote = (updated['amountPerVote'] ?? 0) as int;
 
           updated['votes'] = (updated['votes'] ?? 0) + 1;
-          updated['requiredVotes'] = math.max((updated['requiredVotes'] ?? 0) - 1, 0);
-          updated['funded'] = math.min((updated['funded'] ?? 0) + amountPerVote, goal);
+          updated['requiredVotes'] =
+              math.max((updated['requiredVotes'] ?? 0) - 1, 0);
+          updated['funded'] =
+              math.min((updated['funded'] ?? 0) + amountPerVote, goal);
 
-          final List<dynamic> voters = List.from(updated['voters'] ?? []);
-          voters.add(user.uid);
+          final voters = List<String>.from((updated['voters'] ?? []) as List);
+          if (!voters.contains(user.uid)) voters.add(user.uid);
           updated['voters'] = voters;
 
-          final bool completed = (updated['funded'] >= goal) || (updated['requiredVotes'] == 0);
-          updated['status'] = completed ? 'Completed' : (updated['status'] ?? 'Pending');
+          final completed =
+              (updated['funded'] >= goal) || (updated['requiredVotes'] == 0);
+          updated['status'] =
+              completed ? 'Completed' : (updated['status'] ?? 'Pending');
 
           _projects[i] = updated;
         }
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Vote recorded!')),
+        const SnackBar(content: Text('Vote recorded on-chain!')),
       );
-    } on StateError catch (e) {
-      if (e.message == 'already_voted') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("You've already voted on this project.")),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Voting failed: $e')),
-        );
-      }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Voting failed: $e')),
@@ -421,8 +515,7 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
     }
   }
 
-  // ---------- UI ----------
-
+  // ------------ UI ------------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -436,9 +529,10 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
           labelColor: Colors.white,
           unselectedLabelColor: Colors.grey,
           tabs: const [
-            Tab(icon: Icon(Icons.people)),
-            Tab(icon: Icon(Icons.lock)),
-            Tab(icon: Icon(Icons.engineering)),
+            Tab(icon: Icon(Icons.people)),       // Community
+            Tab(icon: Icon(Icons.lock)),         // Private
+            Tab(icon: Icon(Icons.layers)),       // By Block
+            Tab(icon: Icon(Icons.engineering)),  // Contractors
           ],
         ),
       ),
@@ -447,6 +541,7 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
         children: [
           _buildCommunityProjectsTab(),
           _buildPrivateProjectsTab(),
+          _buildByBlockTab(),
           _buildContractorsTab(),
         ],
       ),
@@ -468,31 +563,191 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
                 padding: const EdgeInsets.all(16),
                 itemCount: _filteredPublicProjects.length,
                 separatorBuilder: (_, __) => const SizedBox(height: 16),
-                itemBuilder: (context, index) => _buildProjectCard(_filteredPublicProjects[index], true),
+                itemBuilder: (context, index) =>
+                    _buildProjectCard(_filteredPublicProjects[index], true),
               ),
       ),
     );
   }
 
+  Widget _buildPrivateProjectsTab() {
+    return Stack(children: [
+      Container(
+        color: Colors.black,
+        child: _filteredPrivateProjects.isEmpty
+            ? _buildEmptyState(
+                icon: Icons.folder_special,
+                title: "No Private Projects",
+                description: "Create your first private project",
+              )
+            : ListView.separated(
+                padding: const EdgeInsets.all(16),
+                itemCount: _filteredPrivateProjects.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 16),
+                itemBuilder: (context, index) =>
+                    _buildProjectCard(_filteredPrivateProjects[index], false),
+              ),
+      ),
+      if (_showSubmitForm)
+        GestureDetector(
+          onTap: _toggleSubmitForm,
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            color: Colors.black.withOpacity(0.7),
+            child: Center(child: SingleChildScrollView(child: _buildSubmitForm())),
+          ),
+        ),
+      Positioned(
+        bottom: 20,
+        right: 20,
+        child: FloatingActionButton(
+          backgroundColor: Colors.grey[800],
+          onPressed: _toggleSubmitForm,
+          child: const Icon(Icons.add, color: Colors.white),
+        ),
+      ),
+    ]);
+  }
+
+  Widget _buildByBlockTab() {
+    final props = _userProperties; // [{id, verified:true}]
+    return Container(
+      color: Colors.black,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: DropdownButtonFormField<String>(
+              value: _activeParcelId ??
+                  (props.isNotEmpty ? props.first['id'] as String : null),
+              dropdownColor: Colors.grey[900],
+              style: const TextStyle(color: Colors.white),
+              decoration: _dropdownDecoration(),
+              items: props.map((p) {
+                final id = p['id'] as String;
+                final verified = (p['verified'] ?? false) as bool;
+                return DropdownMenuItem<String>(
+                  value: id,
+                  child: Row(
+                    children: [
+                      Icon(
+                        verified ? Icons.verified : Icons.warning,
+                        color: verified ? Colors.green : Colors.orange,
+                        size: 18,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(id, overflow: TextOverflow.ellipsis),
+                    ],
+                  ),
+                );
+              }).toList(),
+              onChanged: (val) {
+                if (val != null) _loadProjectsForParcel(val);
+              },
+            ),
+          ),
+          Expanded(
+            child: (_activeParcelId == null)
+                ? _buildEmptyState(
+                    icon: Icons.layers_outlined,
+                    title: "No Verified Parcels",
+                    description:
+                        "We didn’t find any of your Firestore parcels on the blockchain.\n"
+                        "Register them on-chain or check the title number.",
+                  )
+                : (_parcelProjects.isEmpty
+                    ? _buildEmptyState(
+                        icon: Icons.layers_outlined,
+                        title: "No Projects for Block",
+                        description: "No projects yet for $_activeParcelId",
+                      )
+                    : ListView.separated(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: _parcelProjects.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 16),
+                        itemBuilder: (ctx, i) {
+                          final p = _parcelProjects[i];
+                          final type = (p['type'] ?? '').toString().toLowerCase();
+                          final isPublic =
+                              type == 'public' || p['isPublic'] == true;
+                          if (!p.containsKey('id') && p['projectId'] != null) {
+                            p['id'] = p['projectId'];
+                          }
+                          return _buildProjectCard(p, isPublic);
+                        },
+                      )),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildContractorsTab() {
+    final contractors = [
+      {
+        'id': 'contractor_001',
+        'name': 'Bako Engineering',
+        'specialty': 'Water Systems',
+        'rating': 4.5,
+        'location': 'Douala, Cameroon',
+        'profileImage': 'https://via.placeholder.com/100x100.png?text=B',
+        'completedProjects': 42,
+      },
+      {
+        'id': 'contractor_002',
+        'name': 'Solar Works Africa',
+        'specialty': 'Solar Installations',
+        'rating': 4.8,
+        'location': 'Kigali, Rwanda',
+        'profileImage': 'https://via.placeholder.com/100x100.png?text=S',
+        'completedProjects': 37,
+      },
+    ];
+
+    return Container(
+      color: Colors.black,
+      child: contractors.isEmpty
+          ? _buildEmptyState(
+              icon: Icons.engineering,
+              title: "No Contractors Available",
+              description: "Check back later for verified contractors",
+            )
+          : ListView.separated(
+              padding: const EdgeInsets.all(16),
+              itemCount: contractors.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 16),
+              itemBuilder: (context, index) =>
+                  _buildContractorCard(contractors[index]),
+            ),
+    );
+  }
+
+  // Cards + UI bits
   Widget _buildProjectCard(Map<String, dynamic> project, bool isPublic) {
     final List<dynamic> photoUrls = project['photoUrls'] ?? [];
-    final String llId = (project['propertyId'] ?? '').toString();
+    final String llId = (project['propertyId'] ?? project['parcelId'] ?? '').toString();
     final String hashtag = (project['hashtag'] ?? '').toString();
     final String title = (project['title'] ?? 'Untitled Project').toString();
     final String status = (project['status'] ?? 'Pending').toString();
 
-    final int funded = (project['funded'] ?? 0) as int;
-    final int goal = (project['goal'] ?? 0) as int;
+    final int funded = (project['funded'] ?? 0) is int
+        ? (project['funded'] ?? 0) as int
+        : int.tryParse('${project['funded']}') ?? 0;
+    final int goal = (project['goal'] ?? 0) is int
+        ? (project['goal'] ?? 0) as int
+        : int.tryParse('${project['goal']}') ?? 0;
+
     final double progress = isPublic && goal > 0 ? (funded / goal).clamp(0.0, 1.0) : 0.0;
     final String progressPercent = (progress * 100).toStringAsFixed(1);
 
     final currentUser = FirebaseAuth.instance.currentUser;
     final bool isOwner = (project['ownerId'] == currentUser?.uid);
 
-    final bool alreadyVoted = (project['voters'] ?? []).contains(currentUser?.uid);
+    final votersList = (project['voters'] ?? []) as List;
+    final bool alreadyVoted = votersList.contains(currentUser?.uid);
     final bool goalReached = funded >= goal && goal > 0;
-    final bool targetReached = (project['requiredVotes'] ?? 0) <= 0;
-    final bool canVote = !alreadyVoted && !goalReached && !targetReached;
+    final bool targetReached = ((project['requiredVotes'] ?? 0) as int) <= 0;
+    final bool canVote = isPublic && !alreadyVoted && !goalReached && !targetReached;
 
     return Card(
       color: Colors.grey[900],
@@ -555,7 +810,7 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
                       if (llId.isNotEmpty) {
                         await _searchPolygonByLlId(context, llId, hashtag);
                       } else {
-                        await handleHashtagTap(context, hashtag.replaceFirst('#', ''));
+                        await tags.handleHashtagTap(context, hashtag);
                       }
                     },
                     child: Container(
@@ -564,8 +819,10 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
                       child: Row(mainAxisSize: MainAxisSize.min, children: [
                         const Icon(Icons.tag, size: 14, color: Colors.blueAccent),
                         const SizedBox(width: 4),
-                        Text(hashtag.startsWith('#') ? hashtag.substring(1) : hashtag,
-                            style: const TextStyle(color: Colors.blueAccent, fontSize: 12)),
+                        Text(
+                          hashtag.startsWith('#') ? hashtag.substring(1) : hashtag,
+                          style: const TextStyle(color: Colors.blueAccent, fontSize: 12),
+                        ),
                       ]),
                     ),
                   ),
@@ -576,7 +833,7 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
           RichText(
             text: TextSpan(
               style: const TextStyle(color: Colors.grey, fontSize: 14),
-              children: buildTextWithHashtag(context, (project['description'] ?? '').toString()),
+              children: tags.buildTextWithHashtag(context, (project['description'] ?? '').toString()),
             ),
           ),
           const SizedBox(height: 16),
@@ -588,12 +845,14 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
               Text("$funded CFA / $goal CFA", style: const TextStyle(color: Colors.grey)),
             ]),
             const SizedBox(height: 6),
-            LinearProgressIndicator(
-              value: progress,
-              backgroundColor: Colors.grey[800],
-              color: Colors.blue,
-              minHeight: 8,
+            ClipRRect(
               borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: progress,
+                backgroundColor: Colors.grey[800],
+                color: Colors.blue,
+                minHeight: 8,
+              ),
             ),
             const SizedBox(height: 12),
 
@@ -693,7 +952,7 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
       Navigator.of(context).pop();
 
       if (query.docs.isEmpty) {
-        await handleHashtagTap(context, hashtag.replaceFirst('#', ''));
+        await tags.handleHashtagTap(context, hashtag.replaceFirst('#', ''));
         return;
       }
 
@@ -726,83 +985,226 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
     }
   }
 
-  Widget _buildPrivateProjectsTab() {
-    return Stack(children: [
-      Container(
-        color: Colors.black,
-        child: _filteredPrivateProjects.isEmpty
-            ? _buildEmptyState(
-                icon: Icons.folder_special,
-                title: "No Private Projects",
-                description: "Create your first private project",
-              )
-            : ListView.separated(
-                padding: const EdgeInsets.all(16),
-                itemCount: _filteredPrivateProjects.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 16),
-                itemBuilder: (context, index) => _buildProjectCard(_filteredPrivateProjects[index], false),
-              ),
-      ),
-      if (_showSubmitForm)
-        GestureDetector(
-          onTap: _toggleSubmitForm,
-          behavior: HitTestBehavior.opaque,
-          child: Container(
-            color: Colors.black.withOpacity(0.7),
-            child: Center(child: SingleChildScrollView(child: _buildSubmitForm())),
-          ),
-        ),
-      Positioned(
-        bottom: 20,
-        right: 20,
-        child: FloatingActionButton(
-          backgroundColor: Colors.grey[800],
-          onPressed: _toggleSubmitForm,
-          child: const Icon(Icons.add, color: Colors.white),
-        ),
-      ),
-    ]);
-  }
-
-  Widget _buildContractorsTab() {
-    final contractors = [
-      {
-        'id': 'contractor_001',
-        'name': 'Bako Engineering',
-        'specialty': 'Water Systems',
-        'rating': 4.5,
-        'location': 'Douala, Cameroon',
-        'profileImage': 'https://via.placeholder.com/100x100.png?text=B',
-        'completedProjects': 42,
-      },
-      {
-        'id': 'contractor_002',
-        'name': 'Solar Works Africa',
-        'specialty': 'Solar Installations',
-        'rating': 4.8,
-        'location': 'Kigali, Rwanda',
-        'profileImage': 'https://via.placeholder.com/100x100.png?text=S',
-        'completedProjects': 37,
-      },
-    ];
-
+  // -------- Submit form UI --------
+  Widget _buildSubmitForm() {
     return Container(
-      color: Colors.black,
-      child: contractors.isEmpty
-          ? _buildEmptyState(
-              icon: Icons.engineering,
-              title: "No Contractors Available",
-              description: "Check back later for verified contractors",
-            )
-          : ListView.separated(
-              padding: const EdgeInsets.all(16),
-              itemCount: contractors.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 16),
-              itemBuilder: (context, index) => _buildContractorCard(contractors[index]),
+      width: MediaQuery.of(context).size.width * 0.9,
+      margin: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(color: Colors.grey[900], borderRadius: BorderRadius.circular(16)),
+      child: Form(
+        key: _formKey,
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            const Text("Create New Project",
+                style: TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold)),
+            IconButton(icon: const Icon(Icons.close, color: Colors.white), onPressed: _toggleSubmitForm),
+          ]),
+          const SizedBox(height: 20),
+          TextFormField(
+            controller: _descriptionController,
+            style: const TextStyle(color: Colors.white),
+            decoration: _inputDecoration("Project Description", hint: "Describe what needs to be done..."),
+            maxLines: 3,
+            validator: (val) => (val == null || val.isEmpty) ? "Required" : null,
+          ),
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: _amountController,
+            style: const TextStyle(color: Colors.white),
+            decoration: _inputDecoration("Estimated Cost (CFA)", prefixText: "CFA "),
+            keyboardType: TextInputType.number,
+            onChanged: (_) => _updateCostPerVoter(),
+            validator: (val) {
+              final x = int.tryParse(val ?? '');
+              if (x == null || x <= 0) return "Enter a number > 0";
+              return null;
+            },
+          ),
+          const SizedBox(height: 16),
+
+          if (_isPublic) ...[
+            TextFormField(
+              controller: _minVotersController,
+              style: const TextStyle(color: Colors.white),
+              decoration: _inputDecoration("Minimum Voters Required", hint: "100"),
+              keyboardType: TextInputType.number,
+              onChanged: (_) => _updateCostPerVoter(),
+              validator: (val) {
+                final x = int.tryParse(val ?? '');
+                if (x == null || x <= 0) return "Enter a number > 0";
+                return null;
+              },
             ),
+            const SizedBox(height: 8),
+            if (_costPerVoter != null)
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(color: Colors.blue[900], borderRadius: BorderRadius.circular(8)),
+                child: Row(children: [
+                  const Icon(Icons.info_outline, color: Colors.white),
+                  const SizedBox(width: 8),
+                  Text("CFA ${_costPerVoter!.toStringAsFixed(2)} per vote",
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                ]),
+              ),
+            const SizedBox(height: 16),
+          ],
+
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.grey[800],
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.grey[700]!),
+            ),
+            child: Row(children: [
+              Icon(_isPublic ? Icons.public : Icons.lock_outline, color: Colors.white),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(_isPublic ? "Public Project" : "Private Project",
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  Text(
+                    _isPublic ? "Community will vote on this project" : "Only visible to you and approved contractors",
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                ]),
+              ),
+              Switch(
+                value: _isPublic,
+                onChanged: (v) {
+                  // Prevent switching to Private if user has no parcels
+                  if (!v && _userProperties.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("You don’t have any blockchain-owned parcels to link.")),
+                    );
+                    return;
+                  }
+                  setState(() {
+                    _isPublic = v;
+                    if (!_isPublic) {
+                      _minVotersController.clear();
+                      _costPerVoter = null;
+                    }
+                  });
+                },
+                activeColor: Colors.blue,
+              ),
+            ]),
+          ),
+          const SizedBox(height: 16),
+
+          if (!_isPublic && _userProperties.isNotEmpty) ...[
+            const Text("Linked Property (LL ID)",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              decoration: _dropdownDecoration(),
+              dropdownColor: Colors.grey[900],
+              style: const TextStyle(color: Colors.white),
+              value: _selectedPropertyId,
+              items: _userProperties.map<DropdownMenuItem<String>>((prop) {
+                final id = prop['id'] as String;
+                final isVerified = (prop['verified'] ?? false) as bool;
+                return DropdownMenuItem<String>(
+                  value: id,
+                  child: Row(children: [
+                    Icon(isVerified ? Icons.verified : Icons.warning,
+                        color: isVerified ? Colors.green : Colors.orange, size: 18),
+                    const SizedBox(width: 8),
+                    Text(id, overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: isVerified ? Colors.green : Colors.white)),
+                  ]),
+                );
+              }).toList(),
+              onChanged: (val) async {
+                if (val == null) return;
+                setState(() {
+                  _selectedPropertyId = val;
+                  _isPropertyVerified = false;
+                });
+                final verified = await _verifyPropertyOnBlockchain(val);
+                setState(() => _isPropertyVerified = verified);
+              },
+            ),
+            const SizedBox(height: 8),
+            if (_selectedPropertyId != null)
+              Text(
+                _isPropertyVerified ? "✅ Property verified on blockchain" : "⚠️ Property not verified",
+                style: TextStyle(color: _isPropertyVerified ? Colors.green : Colors.orange, fontSize: 12),
+              ),
+            const SizedBox(height: 16),
+          ],
+
+          // If user has NO parcels and tries private, show guidance (outside the button)
+          if (!_isPublic && _userProperties.isEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange[900],
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text(
+                "No blockchain-owned properties found for your account.\n"
+                "Register a parcel or make sure the on-chain owner matches your account (UID/email/phone/display name).",
+                style: TextStyle(color: Colors.white),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+
+          const Text("Project Photos", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              icon: const Icon(Icons.photo_library, color: Colors.white),
+              label: const Text("Add Photos", style: TextStyle(color: Colors.white)),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                side: const BorderSide(color: Colors.grey),
+              ),
+              onPressed: _pickImages,
+            ),
+          ),
+          if (_selectedImages.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text("${_selectedImages.length} photo(s) selected", style: const TextStyle(color: Colors.grey)),
+            ),
+
+          const SizedBox(height: 24),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+              onPressed: _isLoading ||
+                      (!_isPublic && (_selectedPropertyId == null || _userProperties.isEmpty))
+                  ? null
+                  : _submitContract,
+              child: _isLoading
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Text("SUBMIT PROJECT",
+                      style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+            ),
+          ),
+        ]),
+      ),
     );
   }
 
+  // Misc UI helpers
   Widget _buildEmptyState({required IconData icon, required String title, required String description}) {
     return Center(
       child: Padding(
@@ -897,193 +1299,6 @@ class _CifScreenState extends State<CifScreen> with SingleTickerProviderStateMix
       ]),
     ]);
   }
-
-  Widget _buildSubmitForm() {
-    return Container(
-      width: MediaQuery.of(context).size.width * 0.9,
-      margin: const EdgeInsets.all(20),
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(color: Colors.grey[900], borderRadius: BorderRadius.circular(16)),
-      child: Form(
-        key: _formKey,
-        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            const Text("Create New Project",
-                style: TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold)),
-            IconButton(icon: const Icon(Icons.close, color: Colors.white), onPressed: _toggleSubmitForm),
-          ]),
-          const SizedBox(height: 20),
-          TextFormField(
-            controller: _descriptionController,
-            style: const TextStyle(color: Colors.white),
-            decoration: _inputDecoration("Project Description", hint: "Describe what needs to be done..."),
-            maxLines: 3,
-            validator: (val) => (val == null || val.isEmpty) ? "Required" : null,
-          ),
-          const SizedBox(height: 16),
-          TextFormField(
-            controller: _amountController,
-            style: const TextStyle(color: Colors.white),
-            decoration: _inputDecoration("Estimated Cost (CFA)", prefixText: "CFA "),
-            keyboardType: TextInputType.number,
-            onChanged: (_) => _updateCostPerVoter(),
-            validator: (val) {
-              final x = int.tryParse(val ?? '');
-              if (x == null || x <= 0) return "Enter a number > 0";
-              return null;
-            },
-          ),
-          const SizedBox(height: 16),
-
-          if (_isPublic) ...[
-            TextFormField(
-              controller: _minVotersController,
-              style: const TextStyle(color: Colors.white),
-              decoration: _inputDecoration("Minimum Voters Required", hint: "100"),
-              keyboardType: TextInputType.number,
-              onChanged: (_) => _updateCostPerVoter(),
-              validator: (val) {
-                final x = int.tryParse(val ?? '');
-                if (x == null || x <= 0) return "Enter a number > 0";
-                return null;
-              },
-            ),
-            const SizedBox(height: 8),
-            if (_costPerVoter != null)
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(color: Colors.blue[900], borderRadius: BorderRadius.circular(8)),
-                child: Row(children: [
-                  const Icon(Icons.info_outline, color: Colors.white),
-                  const SizedBox(width: 8),
-                  Text("CFA ${_costPerVoter!.toStringAsFixed(2)} per vote",
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                ]),
-              ),
-            const SizedBox(height: 16),
-          ],
-
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.grey[800],
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.grey[700]!),
-            ),
-            child: Row(children: [
-              Icon(_isPublic ? Icons.public : Icons.lock_outline, color: Colors.white),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(_isPublic ? "Public Project" : "Private Project",
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                  Text(
-                    _isPublic ? "Community will vote on this project" : "Only visible to you and approved contractors",
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
-                  ),
-                ]),
-              ),
-              Switch(
-                value: _isPublic,
-                onChanged: (v) {
-                  setState(() {
-                    _isPublic = v;
-                    if (!_isPublic) {
-                      _minVotersController.clear();
-                      _costPerVoter = null;
-                    }
-                  });
-                },
-                activeColor: Colors.blue,
-              ),
-            ]),
-          ),
-          const SizedBox(height: 16),
-
-          if (!_isPublic && _userProperties.isNotEmpty) ...[
-            const Text("Linked Property (LL ID)",
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            DropdownButtonFormField<String>(
-              decoration: _dropdownDecoration(),
-              dropdownColor: Colors.grey[900],
-              style: const TextStyle(color: Colors.white),
-              value: _selectedPropertyId,
-              items: _userProperties.map<DropdownMenuItem<String>>((prop) {
-                final id = prop['id'] as String;
-                final isVerified = (prop['verified'] ?? false) as bool;
-                return DropdownMenuItem<String>(
-                  value: id,
-                  child: Row(children: [
-                    Icon(isVerified ? Icons.verified : Icons.warning,
-                        color: isVerified ? Colors.green : Colors.orange, size: 18),
-                    const SizedBox(width: 8),
-                    Text(id, overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: isVerified ? Colors.green : Colors.white)),
-                  ]),
-                );
-              }).toList(),
-              onChanged: (val) async {
-                if (val == null) return;
-                setState(() {
-                  _selectedPropertyId = val;
-                  _isPropertyVerified = false;
-                });
-                final verified = await _verifyPropertyOnBlockchain(val);
-                setState(() => _isPropertyVerified = verified);
-              },
-            ),
-            const SizedBox(height: 8),
-            if (_selectedPropertyId != null)
-              Text(
-                _isPropertyVerified ? "✅ Property verified on blockchain" : "⚠️ Property not verified",
-                style: TextStyle(color: _isPropertyVerified ? Colors.green : Colors.orange, fontSize: 12),
-              ),
-            const SizedBox(height: 16),
-          ],
-
-          const Text("Project Photos", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              icon: const Icon(Icons.photo_library, color: Colors.white),
-              label: const Text("Add Photos", style: TextStyle(color: Colors.white)),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                side: const BorderSide(color: Colors.grey),
-              ),
-              onPressed: _pickImages,
-            ),
-          ),
-          if (_selectedImages.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Text("${_selectedImages.length} photo(s) selected", style: const TextStyle(color: Colors.grey)),
-            ),
-
-          const SizedBox(height: 24),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                padding: const EdgeInsets.symmetric(vertical: 16),
-              ),
-              onPressed: _isLoading ? null : _submitContract,
-              child: _isLoading
-                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Text("SUBMIT PROJECT", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-            ),
-          ),
-        ]),
-      ),
-    );
-  }
-
-  // ---------- UI helpers ----------
 
   InputDecoration _inputDecoration(String label, {String? hint, String? prefixText}) {
     return InputDecoration(

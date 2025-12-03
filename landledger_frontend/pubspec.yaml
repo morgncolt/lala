@@ -17,6 +17,7 @@ dependencies:
   path_provider: ^2.1.1
   flutter_map_mbtiles: ^1.0.0
   cupertino_icons: ^1.0.8
+  firebase_app_check: ^0.3.0
   firebase_core: ^3.12.1
   firebase_auth: ^5.5.1
   firebase_storage: ^12.4.7
@@ -39,12 +40,18 @@ dependencies:
   flutter_rating_bar: ^4.0.1
   intl: ^0.20.2
   geocoding: ^2.1.0
-  http: ^1.2.1
+  http: ^1.2.2
+  intl_phone_field: ^3.2.0
+  flutter_secure_storage: ^9.2.2
+  # For Phase 2 (client keygen/CSR):
+  cryptography: ^2.7.0
   webview_flutter: ^4.2.2
   fl_chart: ^0.63.0 # or latest
   web3dart: ^2.6.0
   flutter_spinkit: ^5.2.0     # for animated loaders
   provider: ^6.0.5            # for clean state management
+  shared_preferences: ^2.2.3
+
 
 
 
@@ -72,12 +79,15 @@ flutter:
     - assets/data/cameroon.geojson
     - assets/data/nigeria.geojson
     - assets/data/kenya.geojson
+    - assets/data/united_states.geojson
     - assets/images/landledger_logo.png
     - assets/flags/cameroon_flag.png
     - assets/flags/ghana_flag.png
     - assets/flags/kenya_flag.png
     - assets/flags/nigeria_flag.png
+    - assets/flags/united_states_flag.png
     - assets/contract_abi.json
+    
     
     
   

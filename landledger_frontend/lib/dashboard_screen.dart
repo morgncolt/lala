@@ -9,7 +9,9 @@ import 'package:landledger_frontend/settings_screen.dart';
 
 import 'package:landledger_frontend/home_screen.dart';
 import 'package:landledger_frontend/cif_screen.dart';
+import 'widgets/responsive_text.dart';
 import 'routes.dart';
+import 'services/identity_service.dart';
 
 
 
@@ -20,12 +22,12 @@ class DashboardScreen extends StatefulWidget {
   final void Function(String regionId, String geojsonPath)? onRegionSelected;
 
   const DashboardScreen({
-    Key? key,
+    super.key,
     required this.regionId,
     required this.geojsonPath,
     this.initialTabIndex = 0,
     this.onRegionSelected,
-  }) : super(key: key);
+  });
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -35,19 +37,55 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int _selectedIndex = 0;
   String? _selectedRegionId;
   String? _geojsonPath;
-  bool _isDrawerOpen = false;
+  final bool _isDrawerOpen = false;
   late final List<NavigationItem> _navigationItems;
+  late final Map<String, int> _navIndexLookup;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   late final ValueNotifier<Map<String, dynamic>?> blockchainDataNotifier;
+
+  // Current user identity
+  String? _currentUserId;
+  String? _currentUserWallet;
 
   @override
   void initState() {
     super.initState(); // ✅ This must come first
     blockchainDataNotifier = ValueNotifier(null); // ✅ Must be initialized before use
     _navigationItems = _buildNavigationItems();
+    _navIndexLookup = {
+      for (var i = 0; i < _navigationItems.length; i++) _navigationItems[i].label: i,
+    };
     _selectedIndex = widget.initialTabIndex.clamp(0, _navigationItems.length - 1);
     _selectedRegionId = widget.regionId;
     _geojsonPath = widget.geojsonPath;
+
+    // Initialize current user identity
+    _initializeUserIdentity();
+  }
+
+  Future<void> _initializeUserIdentity() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      _currentUserId = user.uid;
+      try {
+        _currentUserWallet = await getCurrentUserWallet();
+        debugPrint('Dashboard: Loaded wallet: $_currentUserWallet');
+      } catch (e) {
+        debugPrint('Dashboard: Failed to load wallet: $e');
+        _currentUserWallet = null;
+      }
+      debugPrint('Dashboard: Current user ID: $_currentUserId');
+      debugPrint('Dashboard: Current user wallet: $_currentUserWallet');
+      if (mounted) setState(() {});
+    } else {
+      debugPrint('Dashboard: No authenticated user');
+      // Fallback to demo credentials if no user is logged in
+      _currentUserId = 'demo_user_001';
+      _currentUserWallet = '0x742d35Cc6635C0532925a3b8D0007d1b7d9Ea5F1';
+      debugPrint('Dashboard: Using demo user ID: $_currentUserId');
+      debugPrint('Dashboard: Using demo user wallet: $_currentUserWallet');
+      if (mounted) setState(() {});
+    }
   }
 
   void _openHomeWithBackToHome() {
@@ -63,6 +101,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _selectedIndex = 0; // Switch to My Properties tab
       _selectedRegionId = widget.regionId; // Ensure region is set
       _geojsonPath = widget.geojsonPath; // Ensure geojson path is set
+    });
+  }
+
+  void _openMapForSelectedRegion() {
+    final mapIndex = _navIndexLookup['Map'];
+    if (mapIndex == null) {
+      debugPrint('Dashboard: Map tab missing from navigation.');
+      return;
+    }
+    setState(() {
+      _selectedIndex = mapIndex;
+      _selectedRegionId ??= widget.regionId;
+      _geojsonPath ??= widget.geojsonPath;
     });
   }
 
@@ -96,7 +147,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           currentRegionId: regionId ?? widget.regionId,
           initialSelectedId: regionId ?? widget.regionId,
           onRegionSelected: _onRegionSelected,
-          onGoToMap: _openHomeWithBackToHome,
+          onGoToMap: _openMapForSelectedRegion,
         ),
       ),
       NavigationItem(
@@ -128,7 +179,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
         icon: Icons.analytics_outlined,
         activeIcon: Icons.analytics,
         label: 'LandLedger',
-        builder: (context, _, __) => LandledgerScreen(blockchainDataNotifier: blockchainDataNotifier),
+        builder: (context, _, __) => LandledgerScreen(
+          blockchainDataNotifier: blockchainDataNotifier,
+          currentOwnerId: _currentUserId,
+          currentWalletAddress: _currentUserWallet,
+        ),
         onTap: _openLandLedgerWithBackToHome,
       ),
       NavigationItem(
@@ -182,18 +237,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
       drawer: isLargeScreen ? null : _buildMobileDrawer(theme),
-      body: Row(
-        children: [
-          if (isLargeScreen) _buildDesktopSidebar(theme),
-          Expanded(
-            child: _navigationItems[_selectedIndex].builder(
-              context,
-              _selectedRegionId ?? widget.regionId,
-              _geojsonPath ?? widget.geojsonPath,
+      body: SafeArea(
+        child: Row(
+          children: [
+            if (isLargeScreen) _buildDesktopSidebar(theme),
+            Expanded(
+              child: _navigationItems[_selectedIndex].builder(
+                context,
+                _selectedRegionId ?? widget.regionId,
+                _geojsonPath ?? widget.geojsonPath,
+              ),
             ),
-          ),
-          
-        ],
+
+          ],
+        ),
       ),
 
     );
@@ -211,105 +268,109 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         ),
       ),
-      child: Column(
-        children: [
-          const SizedBox(height: 20),
-          _buildLogoHeader(theme),
-          const SizedBox(height: 20),
-          Expanded(
-            child: ListView.builder(
-              itemCount: _navigationItems.length,
-              itemBuilder: (context, index) {
-                final item = _navigationItems[index];
-                return _buildSidebarItem(theme, item, index);
-              },
+      child: SafeArea(
+        child: Column(
+          children: [
+            const SizedBox(height: 20),
+            _buildLogoHeader(theme),
+            const SizedBox(height: 20),
+            Expanded(
+              child: ListView.builder(
+                itemCount: _navigationItems.length,
+                itemBuilder: (context, index) {
+                  final item = _navigationItems[index];
+                  return _buildSidebarItem(theme, item, index);
+                },
+              ),
             ),
-          ),
-          const Divider(),
-          _buildSidebarItem(
-            theme,
-            NavigationItem(
-              icon: Icons.settings_outlined,
-              activeIcon: Icons.settings,
-              label: 'Settings',
-              builder: (_, __, ___) => const SettingsScreen(),
+            const Divider(),
+            _buildSidebarItem(
+              theme,
+              NavigationItem(
+                icon: Icons.settings_outlined,
+                activeIcon: Icons.settings,
+                label: 'Settings',
+                builder: (_, __, ___) => const SettingsScreen(),
+              ),
+              _navigationItems.length,
             ),
-            _navigationItems.length,
-          ),
-          // In both _buildDesktopSidebar and _buildMobileDrawer methods:
-          _buildSidebarItem(
-            theme,
-            NavigationItem(
-              icon: Icons.logout,
-              activeIcon: Icons.logout,
-              label: 'Logout',
-              builder: (_, __, ___) => Container(),
-              onTap: () async {
-                try {
-                  await FirebaseAuth.instance.signOut();
-                  if (mounted) {
-                    Navigator.of(context).pushNamedAndRemoveUntil(
-                      RouteConstants.login,  // Using the constant from main.dart
-                      (Route<dynamic> route) => false,  // Remove all routes
-                    );
+            // In both _buildDesktopSidebar and _buildMobileDrawer methods:
+            _buildSidebarItem(
+              theme,
+              NavigationItem(
+                icon: Icons.logout,
+                activeIcon: Icons.logout,
+                label: 'Logout',
+                builder: (_, __, ___) => Container(),
+                onTap: () async {
+                  try {
+                    await FirebaseAuth.instance.signOut();
+                    if (mounted) {
+                      Navigator.of(context).pushNamedAndRemoveUntil(
+                        RouteConstants.login,  // Using the constant from main.dart
+                        (Route<dynamic> route) => false,  // Remove all routes
+                      );
+                    }
+                  } catch (e) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Logout failed: ${e.toString()}')),
+                      );
+                    }
                   }
-                } catch (e) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Logout failed: ${e.toString()}')),
-                    );
-                  }
-                }
-              },
+                },
+              ),
+              _navigationItems.length + 1,
             ),
-            _navigationItems.length + 1,
-          ),
-          const SizedBox(height: 20),
-        ],
+            const SizedBox(height: 20),
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildMobileDrawer(ThemeData theme) {
     return Drawer(
-      child: Column(
-        children: [
-          _buildDrawerHeader(theme),
-          Expanded(
-            child: ListView.builder(
-              itemCount: _navigationItems.length,
-              itemBuilder: (context, index) {
-                final item = _navigationItems[index];
-                return _buildDrawerItem(theme, item, index);
-              },
+      child: SafeArea(
+        child: Column(
+          children: [
+            _buildDrawerHeader(theme),
+            Expanded(
+              child: ListView.builder(
+                itemCount: _navigationItems.length,
+                itemBuilder: (context, index) {
+                  final item = _navigationItems[index];
+                  return _buildDrawerItem(theme, item, index);
+                },
+              ),
             ),
-          ),
-          const Divider(),
-          _buildDrawerItem(
-            theme,
-            NavigationItem(
-              icon: Icons.settings_outlined,
-              activeIcon: Icons.settings,
-              label: 'Settings',
-              builder: (_, __, ___) => const SettingsScreen(),
+            const Divider(),
+            _buildDrawerItem(
+              theme,
+              NavigationItem(
+                icon: Icons.settings_outlined,
+                activeIcon: Icons.settings,
+                label: 'Settings',
+                builder: (_, __, ___) => const SettingsScreen(),
+              ),
+              _navigationItems.length,
             ),
-            _navigationItems.length,
-          ),
-          _buildDrawerItem(
-            theme,
-            NavigationItem(
-              icon: Icons.logout,
-              activeIcon: Icons.logout,
-              label: 'Logout',
-              builder: (_, __, ___) => Container(),
-              onTap: () {
-                FirebaseAuth.instance.signOut();
-                Navigator.pushReplacementNamed(context, '/login');
-              },
+            _buildDrawerItem(
+              theme,
+              NavigationItem(
+                icon: Icons.logout,
+                activeIcon: Icons.logout,
+                label: 'Logout',
+                builder: (_, __, ___) => Container(),
+                onTap: () {
+                  FirebaseAuth.instance.signOut();
+                  Navigator.pushReplacementNamed(context, '/login');
+                },
+              ),
+              _navigationItems.length + 1,
             ),
-            _navigationItems.length + 1,
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -396,12 +457,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
           isSelected ? item.activeIcon : item.icon,
           color: isSelected ? theme.primaryColor : theme.iconTheme.color,
         ),
-        title: Text(
+        title: ResponsiveText(
           item.label,
           style: TextStyle(
             color: isSelected ? theme.primaryColor : theme.textTheme.bodyLarge?.color,
             fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
           ),
+          maxLines: 1,
         ),
         onTap: () {
           if (isSettings) {
@@ -437,7 +499,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       isSelected ? item.activeIcon : item.icon,
       color: isSelected ? theme.primaryColor : theme.iconTheme.color,
     ),
-    title: Text(item.label),
+    title: ResponsiveText(item.label, maxLines: 1),
     selected: isSelected,
     selectedTileColor: theme.primaryColor.withOpacity(0.1),
     onTap: () {
